@@ -246,7 +246,12 @@ def run_evaluation(domain: str, provider: str, num_problems: int,
     aot = AoTPlus(domain_description, provider)
     aot.add_example(init_ex, goal_ex, sol_ex, rand_ex)
 
-    model_name = Config.OPENAI_MODEL_NAME or "gpt-4o-mini"
+    model_map = {
+        "sandbox":     Config.SANDBOX_MODEL_NAME,
+        "openai":      Config.OPENAI_MODEL_NAME,
+        "azure_openai": Config.AZURE_OPENAI_DEPLOYMENT_NAME,
+    }
+    model_name = model_map.get(provider) or "gpt-4o-mini"
     results: List[ProblemResult] = []
 
     for idx, (init_str, goal_str, _ref) in enumerate(problems):
@@ -293,8 +298,9 @@ def run_evaluation(domain: str, provider: str, num_problems: int,
 def main():
     parser = argparse.ArgumentParser(description="Evaluate AoT+ on planning benchmarks")
     parser.add_argument("--domain",   choices=["blocksworld", "logistics"], default="blocksworld")
-    parser.add_argument("--provider", choices=["openai", "azure_openai", "anthropic", "google"],
-                        default="openai")
+    parser.add_argument("--provider",
+                        choices=["sandbox", "openai", "azure_openai", "anthropic", "google"],
+                        default="sandbox")
     parser.add_argument("--num_problems", type=int, default=5,
                         help="How many problems to evaluate (max depends on problem bank size)")
     parser.add_argument("--temperature", type=float, default=0.0)
@@ -311,7 +317,12 @@ def main():
     print(f"\n=== AoT+ Evaluation ===")
     print(f"  Domain   : {args.domain}")
     print(f"  Provider : {args.provider}")
-    print(f"  Model    : {Config.OPENAI_MODEL_NAME or 'gpt-4o-mini'}")
+    model_display = {
+        "sandbox":     Config.SANDBOX_MODEL_NAME,
+        "openai":      Config.OPENAI_MODEL_NAME,
+        "azure_openai": Config.AZURE_OPENAI_DEPLOYMENT_NAME,
+    }.get(args.provider, "unknown")
+    print(f"  Model    : {model_display}")
     print(f"  Problems : {args.num_problems}\n")
 
     summary = run_evaluation(

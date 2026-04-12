@@ -77,6 +77,39 @@ class OpenAIClient(LLMClient):
             return f"Error generating response: {e}"
 
 
+class SandboxClient(LLMClient):
+    """
+    Client for the Princeton AI Sandbox (Portkey.ai gateway).
+
+    Portkey is OpenAI-compatible, so we just point the standard OpenAI
+    client at the sandbox base URL and pass the sandbox API key.
+    The model name can be any model available in the sandbox (e.g. gpt-4o-mini).
+    """
+
+    def __init__(self):
+        self.model = Config.SANDBOX_MODEL_NAME
+        self.client = OpenAI(
+            api_key=Config.SANDBOX_API_KEY,
+            base_url=Config.SANDBOX_BASE_URL,
+        )
+
+    def generate(self, prompt: str, temperature: float = 0.0, max_tokens: int = 1000) -> str:
+        try:
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user",   "content": prompt},
+                ],
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
+            return response.choices[0].message.content
+        except Exception as e:
+            print(f"Error calling Princeton AI Sandbox: {e}")
+            return f"Error generating response: {e}"
+
+
 class AnthropicClient(LLMClient):
     """Client for Anthropic Claude API."""
 
@@ -104,7 +137,9 @@ def get_llm_client(provider: Optional[str] = None) -> LLMClient:
     if provider is None:
         raise ValueError("No LLM provider configured. Check your .env file.")
 
-    if provider == "azure_openai":
+    if provider == "sandbox":
+        return SandboxClient()
+    elif provider == "azure_openai":
         return AzureOpenAIClient()
     elif provider == "openai":
         return OpenAIClient()
