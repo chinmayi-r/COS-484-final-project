@@ -7,54 +7,44 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from src.domains.blocksworld import BlocksWorldDomain
 
 
+Predicate = Tuple[Any, ...]
+
+
 @dataclass
 class ParsedAction:
     """
     Structured Blocksworld action.
-
-    Attributes:
-        raw_text: Original action string.
-        action_type: 'move', 'unstack', 'stack', 'pickup', or 'putdown'.
-        args: Action arguments in order.
     """
     raw_text: str
     action_type: str
     args: Tuple[str, ...]
 
 
-@dataclass
-class PredicateDiff:
-    """
-    Predicate-level difference between a ground-truth state and a predicted state.
-    """
-    missing_predicates: Set[Tuple[Any, ...]]
-    extra_predicates: Set[Tuple[Any, ...]]
-
-
-# AoT+ / repo action format:
-# "Move Block B from Block A to the table"
-# "Move Block A from the table to Block C"
 MOVE_PATTERN = re.compile(
     r"Move\s+Block\s+([A-Za-z0-9]+)\s+from\s+(.+?)\s+to\s+(?:Block\s+([A-Za-z0-9]+)|the\s+table|table)",
     re.IGNORECASE,
 )
-
-# JSON-method / PDDL-style surface forms implied by your doc:
-UNSTACK_PATTERN = re.compile(r"Unstack\s+([A-Za-z0-9]+)\s+from\s+([A-Za-z0-9]+)", re.IGNORECASE)
-STACK_PATTERN = re.compile(r"Stack\s+([A-Za-z0-9]+)\s+on\s+([A-Za-z0-9]+)", re.IGNORECASE)
-PICKUP_PATTERN = re.compile(r"Pick\s*up\s+([A-Za-z0-9]+)", re.IGNORECASE)
-PUTDOWN_PATTERN = re.compile(r"Put\s*down\s+([A-Za-z0-9]+)", re.IGNORECASE)
+UNSTACK_PATTERN = re.compile(
+    r"Unstack\s+([A-Za-z0-9]+)\s+from\s+([A-Za-z0-9]+)",
+    re.IGNORECASE,
+)
+STACK_PATTERN = re.compile(
+    r"Stack\s+([A-Za-z0-9]+)\s+on\s+([A-Za-z0-9]+)",
+    re.IGNORECASE,
+)
+PICKUP_PATTERN = re.compile(
+    r"Pick\s*up\s+([A-Za-z0-9]+)",
+    re.IGNORECASE,
+)
+PUTDOWN_PATTERN = re.compile(
+    r"Put\s*down\s+([A-Za-z0-9]+)",
+    re.IGNORECASE,
+)
 
 
 def canonicalize_state(state: Dict[str, Any]) -> Dict[str, Any]:
     """
     Convert a Blocksworld state into canonical dictionary form.
-
-    Args:
-        state: dict with keys 'on', 'clear', 'holding', 'handempty'.
-
-    Returns:
-        Canonicalized state with sorted 'on' mapping and sorted unique 'clear' list.
     """
     return {
         "on": dict(sorted(state["on"].items())),
@@ -78,22 +68,7 @@ def clone_state(state: Dict[str, Any]) -> Dict[str, Any]:
 
 def validate_json_state(state_json: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Validate and canonicalize a Blocksworld JSON state.
-
-    Required keys follow your doc:
-        on, clear, holding, handempty
-
-    Optional metadata keys:
-        goal_satisfied, goal_remaining
-
-    Args:
-        state_json: Parsed JSON object.
-
-    Returns:
-        Canonicalized state.
-
-    Raises:
-        ValueError: If required fields are missing or malformed.
+    Validate and canonicalize a base Blocksworld JSON state.
     """
     required = {"on", "clear", "holding", "handempty"}
     missing = required - set(state_json.keys())
@@ -122,14 +97,6 @@ def validate_json_state(state_json: Dict[str, Any]) -> Dict[str, Any]:
 def nl_state_to_canonical(state_text: str) -> Dict[str, Any]:
     """
     Parse a natural-language Blocksworld state into canonical form.
-
-    Uses the repo's domain parser for AoT+ state text.
-
-    Args:
-        state_text: Natural-language state description.
-
-    Returns:
-        Canonical Blocksworld state.
     """
     parsed = BlocksWorldDomain.parse_state_description(state_text)
     return canonicalize_state(
@@ -142,14 +109,11 @@ def nl_state_to_canonical(state_text: str) -> Dict[str, Any]:
     )
 
 
-def state_to_predicates(state: Dict[str, Any]) -> Set[Tuple[Any, ...]]:
+def state_to_predicates(state: Dict[str, Any]) -> Set[Predicate]:
     """
     Convert a canonical Blocksworld state into a set of predicates.
-
-    Predicates:
-        on(X, Y), clear(X), holding(X), handempty
     """
-    predicates: Set[Tuple[Any, ...]] = set()
+    predicates: Set[Predicate] = set()
 
     for block, dest in state["on"].items():
         predicates.add(("on", block, dest))
@@ -166,63 +130,9 @@ def state_to_predicates(state: Dict[str, Any]) -> Set[Tuple[Any, ...]]:
     return predicates
 
 
-def diff_predicates(
-    ground_truth_state: Dict[str, Any],
-    predicted_state: Dict[str, Any],
-) -> PredicateDiff:
-    """
-    Compare two states at the predicate level.
-
-    Returns:
-        PredicateDiff with missing and extra predicates.
-    """
-    gt = state_to_predicates(ground_truth_state)
-    pred = state_to_predicates(predicted_state)
-    return PredicateDiff(
-        missing_predicates=gt - pred,
-        extra_predicates=pred - gt,
-    )
-
-
-def classify_error_type(diff: PredicateDiff) -> str:
-    """
-    Assign a coarse first-pass error label from predicate differences.
-
-    Returns:
-        'none', 'omission', 'hallucination', or 'mixed'
-    """
-    missing = len(diff.missing_predicates)
-    extra = len(diff.extra_predicates)
-
-    if missing == 0 and extra == 0:
-        return "none"
-    if missing > 0 and extra == 0:
-        return "omission"
-    if missing == 0 and extra > 0:
-        return "hallucination"
-    return "mixed"
-
-
 def parse_action_text(action_text: str) -> ParsedAction:
     """
-    Parse either AoT+ natural-language Blocksworld actions or JSON-method
-    PDDL-style surface actions.
-
-    Supported formats:
-        - Move Block X from ... to Block Y / the table
-        - Unstack X from Y
-        - Stack X on Y
-        - Pick up X
-        - Put down X
-
-    Args:
-        action_text: Raw action string.
-
-    Returns:
-        ParsedAction.
-
-    Raises:
-        ValueError: If the action cannot be parsed.
+    Parse Blocksworld actions.
     """
     text = action_text.strip()
 
@@ -256,10 +166,6 @@ def apply_action(state: Dict[str, Any], action: ParsedAction) -> bool:
     """
     Apply one action to a mutable canonical Blocksworld state.
 
-    Args:
-        state: Mutable canonical state.
-        action: Parsed action.
-
     Returns:
         True if the action is valid and applied, else False.
     """
@@ -270,7 +176,10 @@ def apply_action(state: Dict[str, Any], action: ParsedAction) -> bool:
 
     if action.action_type == "move":
         block, destination = action.args
+
         if holding is not None or not handempty:
+            return False
+        if block not in on:
             return False
         if block not in clear:
             return False
@@ -292,6 +201,7 @@ def apply_action(state: Dict[str, Any], action: ParsedAction) -> bool:
 
     elif action.action_type == "unstack":
         x, y = action.args
+
         if not handempty or holding is not None:
             return False
         if on.get(x) != y:
@@ -307,6 +217,7 @@ def apply_action(state: Dict[str, Any], action: ParsedAction) -> bool:
 
     elif action.action_type == "stack":
         x, y = action.args
+
         if handempty or holding != x:
             return False
         if y not in clear:
@@ -320,6 +231,7 @@ def apply_action(state: Dict[str, Any], action: ParsedAction) -> bool:
 
     elif action.action_type == "pickup":
         (x,) = action.args
+
         if not handempty or holding is not None:
             return False
         if on.get(x) != "table":
@@ -334,6 +246,7 @@ def apply_action(state: Dict[str, Any], action: ParsedAction) -> bool:
 
     elif action.action_type == "putdown":
         (x,) = action.args
+
         if handempty or holding != x:
             return False
 
@@ -361,15 +274,6 @@ def rollout_actions(
 
     Convention:
         states[t] = state after t actions
-
-    Args:
-        initial_state: Canonical initial state.
-        actions: Parsed action sequence.
-
-    Returns:
-        states: List of canonical states.
-        invalid_action_index: 1-based first invalid action index, if any.
-        invalid_action_text: Raw text of first invalid action, if any.
     """
     cur = clone_state(initial_state)
     states = [clone_state(cur)]
