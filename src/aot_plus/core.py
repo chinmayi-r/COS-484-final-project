@@ -6,27 +6,22 @@ from src.models.llm_client import LLMClient, get_llm_client
 
 class AoTPlusPromptBuilder:
     """Builder for AoT+ style prompts with state memoization and random trajectory augmentation."""
-    
-    def __init__(self, domain_description: str):
-        """Initialize the AoT+ prompt builder.
-        
-        Args:
-            domain_description: Description of the planning domain (e.g., Blocksworld rules)
-        """
+
+    def __init__(self, domain_description: str, use_json_state: bool = False,
+                 state_memoization_interval: int = 3):
         self.domain_description = domain_description
+        self.use_json_state = use_json_state
+        self.state_memoization_interval = state_memoization_interval
         self.examples = []
-        self.state_memoization_interval = 3  # Number of steps between state memoizations
+        self.formatted_examples: List[str] = []  # pre-formatted strings for JSON mode
     
-    def add_example(self, initial_state: str, goal_state: str, solution_trajectory: List[str], 
+    def add_formatted_example(self, example_str: str) -> None:
+        """Add a pre-formatted example string (used for JSON mode where states are hardcoded)."""
+        self.formatted_examples.append(example_str)
+
+    def add_example(self, initial_state: str, goal_state: str, solution_trajectory: List[str],
                    random_trajectories: List[List[str]]) -> None:
-        """Add a few-shot example with both successful and random trajectories.
-        
-        Args:
-            initial_state: Description of initial state
-            goal_state: Description of goal state
-            solution_trajectory: List of steps in the successful solution path
-            random_trajectories: List of lists, where each inner list is a sequence of steps in a failed path
-        """
+        """Add a few-shot example with both successful and random trajectories."""
         self.examples.append({
             "initial_state": initial_state,
             "goal_state": goal_state,
@@ -36,14 +31,12 @@ class AoTPlusPromptBuilder:
     
     def _format_state_memoization(self, state_id: str, state_description: str) -> str:
         """Format a state memoization entry.
-        
-        Args:
-            state_id: Identifier for the state (e.g., "1.2.3")
-            state_description: Description of the current state
-            
-        Returns:
-            Formatted state memoization string
+
+        In JSON mode: state_description must be a JSON string; wraps in STATE_JSON fenced block.
+        In text mode: outputs the classic STATE N: <text> line.
         """
+        if self.use_json_state:
+            return f"STATE_JSON: ```json\n{state_description}\n```\n"
         return f"STATE {state_id}: {state_description}\n"
     
     def _interleave_trajectories(self, solution: List[str], random_paths: List[List[str]]) -> List[str]:
@@ -135,14 +128,14 @@ class AoTPlusPromptBuilder:
     
     def build_prompt(self, initial_state: str, goal_state: str) -> str:
         """Build the complete AoT+ prompt for the given problem.
-        
-        Args:
-            initial_state: Description of the initial state for the problem to solve
-            goal_state: Description of the goal state for the problem to solve
-            
-        Returns:
-            Complete prompt string
+
+        initial_state / goal_state are JSON strings in JSON mode, natural language otherwise.
         """
+        if self.use_json_state:
+            return self._build_json_prompt(initial_state, goal_state)
+        return self._build_text_prompt(initial_state, goal_state)
+
+    def _build_text_prompt(self, initial_state: str, goal_state: str) -> str:
         prompt = f"""# Algorithm of Thoughts Plus (AoT+) Planning System
 
 ## Domain Description:
@@ -164,11 +157,9 @@ Use the Algorithm of Thoughts Plus approach to solve this planning problem.
 
 ## Examples:
 """
-        # Add formatted examples
         for example in self.examples:
             prompt += f"{self._format_example(example)}\n---\n\n"
-        
-        # Add the actual problem to solve
+
         prompt += f"""## Problem to Solve:
 
 Initial state: {initial_state}
@@ -177,9 +168,55 @@ Goal state: {goal_state}
 STATE 0: {initial_state}
 
 Solve this step by step, tracking the state periodically. Remember to:
-1. Prefix each action with "ACTION:" 
+1. Prefix each action with "ACTION:"
 2. Update the state after significant changes using "STATE x.y:" notation
 3. End with a "Plan summary:" section
+
+Start your solution:
+"""
+        return prompt
+
+    def _build_json_prompt(self, initial_state_json: str, goal_state_json: str) -> str:
+        prompt = f"""# Algorithm of Thoughts Plus (AoT+) Planning System — JSON State Mode
+
+## Domain Description:
+{self.domain_description}
+
+## Planning Task:
+Given an initial state and a goal state (both in JSON), create a plan to transform the initial
+state into the goal state.
+
+### CRITICAL Output Format Rules:
+1. For each action, output a line starting with "ACTION:" followed by the action description
+2. Immediately after EVERY action (no exceptions), output a STATE_JSON block showing the
+   complete updated world state in this exact format:
+   STATE_JSON: ```json
+   {{...}}
+   ```
+3. Every single action must be followed by exactly one STATE_JSON block
+4. Do not skip state updates for any action
+5. Explore different paths if needed; if you backtrack, still output ACTION + STATE_JSON
+   for each move (including the undo moves)
+6. End with a "Plan summary:" section listing only the final successful actions
+
+## Examples:
+"""
+        for ex in self.formatted_examples:
+            prompt += f"{ex}\n---\n\n"
+
+        prompt += f"""## Problem to Solve:
+
+Initial state (JSON):
+{initial_state_json}
+
+Goal state (JSON):
+{goal_state_json}
+
+STATE_JSON: ```json
+{initial_state_json}
+```
+
+Solve this step by step. Remember: after EVERY ACTION output exactly one STATE_JSON block.
 
 Start your solution:
 """
@@ -188,18 +225,21 @@ Start your solution:
 
 class AoTPlus:
     """Main implementation of Algorithm of Thoughts Plus."""
-    
-    def __init__(self, domain_description: str, llm_provider: Optional[str] = None):
-        """Initialize the AoT+ implementation.
-        
-        Args:
-            domain_description: Description of the planning domain (e.g., Blocksworld rules)
-            llm_provider: Optional LLM provider to use. If None, uses the first available provider.
-        """
+
+    def __init__(self, domain_description: str, llm_provider: Optional[str] = None,
+                 use_json_state: bool = False, state_memoization_interval: int = 3):
         self.llm_client = get_llm_client(llm_provider)
-        self.prompt_builder = AoTPlusPromptBuilder(domain_description)
-        
-    def add_example(self, initial_state: str, goal_state: str, solution_trajectory: List[str], 
+        self.prompt_builder = AoTPlusPromptBuilder(
+            domain_description,
+            use_json_state=use_json_state,
+            state_memoization_interval=state_memoization_interval,
+        )
+
+    def add_formatted_example(self, example_str: str) -> None:
+        """Add a pre-formatted example (JSON mode)."""
+        self.prompt_builder.add_formatted_example(example_str)
+
+    def add_example(self, initial_state: str, goal_state: str, solution_trajectory: List[str],
                    random_trajectories: List[List[str]]) -> None:
         """Add a few-shot example to the prompt builder."""
         self.prompt_builder.add_example(

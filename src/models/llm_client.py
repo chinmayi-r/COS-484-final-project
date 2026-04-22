@@ -59,6 +59,7 @@ class OpenAIClient(LLMClient):
     def __init__(self):
         self.model = Config.OPENAI_MODEL_NAME or "gpt-4o-mini"
         self.client = OpenAI(api_key=Config.OPENAI_API_KEY)
+        self.last_usage: Optional[dict] = None
 
     def generate(self, prompt: str, temperature: float = 0.0, max_tokens: int = 1000) -> str:
         try:
@@ -71,6 +72,11 @@ class OpenAIClient(LLMClient):
                 temperature=temperature,
                 max_tokens=max_tokens,
             )
+            self.last_usage = {
+                "prompt_tokens":     response.usage.prompt_tokens,
+                "completion_tokens": response.usage.completion_tokens,
+                "total_tokens":      response.usage.total_tokens,
+            }
             return response.choices[0].message.content
         except Exception as e:
             print(f"Error calling OpenAI API: {e}")
@@ -78,13 +84,7 @@ class OpenAIClient(LLMClient):
 
 
 class SandboxClient(LLMClient):
-    """
-    Client for the Princeton AI Sandbox (Portkey.ai gateway).
-
-    Portkey is OpenAI-compatible, so we just point the standard OpenAI
-    client at the sandbox base URL and pass the sandbox API key.
-    The model name can be any model available in the sandbox (e.g. gpt-4o-mini).
-    """
+    """Client for the Princeton AI Sandbox (Portkey.ai gateway, OpenAI-compatible)."""
 
     def __init__(self):
         self.model = Config.SANDBOX_MODEL_NAME
@@ -92,6 +92,7 @@ class SandboxClient(LLMClient):
             api_key=Config.SANDBOX_API_KEY,
             base_url=Config.SANDBOX_BASE_URL,
         )
+        self.last_usage: Optional[dict] = None
 
     def generate(self, prompt: str, temperature: float = 0.0, max_tokens: int = 1000) -> str:
         try:
@@ -104,6 +105,11 @@ class SandboxClient(LLMClient):
                 temperature=temperature,
                 max_tokens=max_tokens,
             )
+            self.last_usage = {
+                "prompt_tokens":     response.usage.prompt_tokens,
+                "completion_tokens": response.usage.completion_tokens,
+                "total_tokens":      response.usage.total_tokens,
+            }
             return response.choices[0].message.content
         except Exception as e:
             print(f"Error calling Princeton AI Sandbox: {e}")
