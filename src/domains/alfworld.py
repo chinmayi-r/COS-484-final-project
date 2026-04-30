@@ -456,139 +456,235 @@ The state is represented by facts about:
 """
 
     @staticmethod
-    def _apply_fact(state, predicate, args):
-        if predicate == "atLocation" and len(args) == 2:
-            state.at_location[args[0]] = args[1]
-        elif predicate == "receptacleAtLocation" and len(args) == 2:
-            state.receptacle_at_location[args[0]] = args[1]
-        elif predicate == "objectAtLocation" and len(args) == 2:
-            state.object_at_location[args[0]] = args[1]
-        elif predicate == "openable" and len(args) == 1:
-            state.openable.add(args[0])
-        elif predicate == "opened" and len(args) == 1:
-            state.opened.add(args[0])
-        elif predicate == "inReceptacle" and len(args) == 2:
-            state.in_receptacle[args[0]] = args[1]
-        elif predicate == "isReceptacleObject" and len(args) == 1:
-            state.is_receptacle_object.add(args[0])
-        elif predicate == "inReceptacleObject" and len(args) == 2:
-            state.in_receptacle_object[args[0]] = args[1]
-        elif predicate == "isReceptacleObjectFull" and len(args) == 1:
-            state.is_receptacle_object_full.add(args[0])
-        elif predicate == "wasInReceptacle" and len(args) == 2:
-            state.was_in_receptacle.add((args[0], args[1]))
-        elif predicate == "checked" and len(args) == 1:
-            state.checked.add(args[0])
-        elif predicate == "examined" and len(args) == 1:
-            state.examined.add(args[0])
-        elif predicate == "receptacleType" and len(args) == 2:
-            state.receptacle_type[args[0]] = args[1]
-        elif predicate == "canContain" and len(args) == 2:
-            state.can_contain.add((args[0], args[1]))
-        elif predicate == "objectType" and len(args) == 2:
-            state.object_type[args[0]] = args[1]
-        elif predicate == "holds" and len(args) == 2:
-            state.holds[args[0]] = args[1]
-        elif predicate == "holdsAny" and len(args) == 1:
-            state.holds_any.add(args[0])
-        elif predicate == "holdsAnyReceptacleObject" and len(args) == 1:
-            state.holds_any_receptacle_object.add(args[0])
-        elif predicate == "full" and len(args) == 1:
-            state.full.add(args[0])
-        elif predicate == "isClean" and len(args) == 1:
-            state.is_clean.add(args[0])
-        elif predicate == "cleanable" and len(args) == 1:
-            state.cleanable.add(args[0])
-        elif predicate == "isHot" and len(args) == 1:
-            state.is_hot.add(args[0])
-        elif predicate == "heatable" and len(args) == 1:
-            state.heatable.add(args[0])
-        elif predicate == "isCool" and len(args) == 1:
-            state.is_cool.add(args[0])
-        elif predicate == "coolable" and len(args) == 1:
-            state.coolable.add(args[0])
-        elif predicate == "pickupable" and len(args) == 1:
-            state.pickupable.add(args[0])
-        elif predicate == "moveable" and len(args) == 1:
-            state.moveable.add(args[0])
-        elif predicate == "toggleable" and len(args) == 1:
-            state.toggleable.add(args[0])
-        elif predicate == "isOn" and len(args) == 1:
-            state.is_on.add(args[0])
-        elif predicate == "isToggled" and len(args) == 1:
-            state.is_toggled.add(args[0])
-        elif predicate == "sliceable" and len(args) == 1:
-            state.sliceable.add(args[0])
-        elif predicate == "isSliced" and len(args) == 1:
-            state.is_sliced.add(args[0])
-
-    @staticmethod
     def parse_state_description(description):
-        """Parse ALFWorld/PDDL-style fact descriptions into an ALFWorldState."""
+        """Parse a natural-language ALFWorld state description."""
         state = ALFWorldState()
 
-        known_predicates = {
-            "atLocation", "receptacleAtLocation", "objectAtLocation", "openable", "opened",
-            "inReceptacle", "isReceptacleObject", "inReceptacleObject", "isReceptacleObjectFull",
-            "wasInReceptacle", "checked", "examined", "receptacleType", "canContain", "objectType",
-            "holds", "holdsAny", "holdsAnyReceptacleObject", "full", "isClean", "cleanable",
-            "isHot", "heatable", "isCool", "coolable", "pickupable", "moveable", "toggleable",
-            "isOn", "isToggled", "sliceable", "isSliced",
+        # Agent location:
+        # "Agent A is at Kitchen"
+        for match in re.finditer(r"Agent ([A-Za-z0-9_]+) is at ([A-Za-z0-9_]+)", description):
+            agent = match.group(1)
+            location = match.group(2)
+            state.at_location[agent] = location
+
+        # Receptacle location:
+        # "CounterTop T is at Kitchen"
+        receptacle_pattern = (
+            r"(CounterTop|SinkBasin|Microwave|Fridge|Cabinet|Drawer|Shelf|Table|Desk|Dresser|"
+            r"CoffeeTable|DiningTable|SideTable|Sofa|Bed|ArmChair|GarbageCan|Toaster|"
+            r"StoveBurner|CoffeeMachine|BathtubBasin|Toilet|TVStand|Safe) "
+            r"([A-Za-z0-9_]+) is at ([A-Za-z0-9_]+)"
+        )
+        for match in re.finditer(receptacle_pattern, description):
+            receptacle_type = match.group(1) + "Type"
+            receptacle = match.group(2)
+            location = match.group(3)
+            state.receptacle_at_location[receptacle] = location
+            state.receptacle_type[receptacle] = receptacle_type
+
+        # Object inside receptacle:
+        # "Mug U is in CounterTop T"
+        object_in_receptacle_pattern = (
+            r"([A-Za-z]+) ([A-Za-z0-9_]+) is in "
+            r"(CounterTop|SinkBasin|Microwave|Fridge|Cabinet|Drawer|Shelf|Table|Desk|Dresser|"
+            r"CoffeeTable|DiningTable|SideTable|Sofa|Bed|ArmChair|GarbageCan|Toaster|"
+            r"StoveBurner|CoffeeMachine|BathtubBasin|Toilet|TVStand|Safe) "
+            r"([A-Za-z0-9_]+)"
+        )
+        for match in re.finditer(object_in_receptacle_pattern, description):
+            object_type = match.group(1) + "Type"
+            obj = match.group(2)
+            receptacle = match.group(4)
+
+            state.object_type[obj] = object_type
+            state.in_receptacle[obj] = receptacle
+
+            if receptacle in state.receptacle_at_location:
+                state.object_at_location[obj] = state.receptacle_at_location[receptacle]
+
+        # Object directly at location:
+        # "Knife K is at Kitchen"
+        object_at_location_pattern = r"([A-Za-z]+) ([A-Za-z0-9_]+) is at ([A-Za-z0-9_]+)"
+        for match in re.finditer(object_at_location_pattern, description):
+            obj_type_name = match.group(1)
+            obj = match.group(2)
+            location = match.group(3)
+
+            # Avoid reparsing agent/receptacle facts as objects.
+            if obj_type_name in {
+                "Agent", "CounterTop", "SinkBasin", "Microwave", "Fridge", "Cabinet",
+                "Drawer", "Shelf", "Table", "Desk", "Dresser", "CoffeeTable",
+                "DiningTable", "SideTable", "Sofa", "Bed", "ArmChair", "GarbageCan",
+                "Toaster", "StoveBurner", "CoffeeMachine", "BathtubBasin", "Toilet",
+                "TVStand", "Safe"
+            }:
+                continue
+
+            state.object_type[obj] = obj_type_name + "Type"
+            state.object_at_location[obj] = location
+
+        # Openable / opened:
+        # "Fridge F is openable"
+        # "Fridge F is opened"
+        for match in re.finditer(r"[A-Za-z]+ ([A-Za-z0-9_]+) is openable", description):
+            state.openable.add(match.group(1))
+
+        for match in re.finditer(r"[A-Za-z]+ ([A-Za-z0-9_]+) is opened", description):
+            state.opened.add(match.group(1))
+
+        # Object capabilities/statuses:
+        capability_map = {
+            "cleanable": state.cleanable,
+            "heatable": state.heatable,
+            "coolable": state.coolable,
+            "pickupable": state.pickupable,
+            "moveable": state.moveable,
+            "toggleable": state.toggleable,
+            "sliceable": state.sliceable,
+            "clean": state.is_clean,
+            "hot": state.is_hot,
+            "cool": state.is_cool,
+            "on": state.is_on,
+            "toggled": state.is_toggled,
+            "sliced": state.is_sliced,
         }
 
-        for atom in re.findall(r"\(([^()]+)\)", description):
-            pieces = atom.split()
-            if not pieces:
-                continue
+        for word, target_set in capability_map.items():
+            pattern = r"[A-Za-z]+ ([A-Za-z0-9_]+) is " + word
+            for match in re.finditer(pattern, description):
+                target_set.add(match.group(1))
 
-            predicate = pieces[0]
-            args = pieces[1:]
+        # Handles compact form:
+        # "Mug U is cleanable, heatable, and coolable"
+        compact_property_pattern = r"[A-Za-z]+ ([A-Za-z0-9_]+) is ([^.]+?)(?:,|$)"
+        for match in re.finditer(compact_property_pattern, description):
+            obj = match.group(1)
+            props = match.group(2).replace("and", ",")
+            for prop in props.split(","):
+                prop = prop.strip()
+                if prop in capability_map:
+                    capability_map[prop].add(obj)
 
-            if predicate not in known_predicates:
-                continue
+        # Holding:
+        # "Agent A is holding Mug U"
+        for match in re.finditer(r"Agent ([A-Za-z0-9_]+) is holding [A-Za-z]+ ([A-Za-z0-9_]+)", description):
+            agent = match.group(1)
+            obj = match.group(2)
+            state.holds[agent] = obj
+            state.holds_any.add(agent)
 
-            # Skip quantified-variable atoms from generic logical templates.
-            if any(token.startswith("?") for token in args):
-                continue
-
-            ALFWorldDomain._apply_fact(state, predicate, args)
+        # Default compatibility constraints needed for example planning.
+        # These mirror the canContain predicate role in the PDDL.
+        common_receptacle_types = set(state.receptacle_type.values())
+        common_object_types = set(state.object_type.values())
+        for rt in common_receptacle_types:
+            for ot in common_object_types:
+                state.can_contain.add((rt, ot))
 
         return state
 
     @staticmethod
     def generate_example_problem():
-        """Generate an example ALFWorld problem with solution and random trajectories."""
+        """Generate a natural-language ALFWorld example problem.
+
+        This example is intentionally more ALFWorld-like than a minimal toy task:
+        the agent must navigate, open a receptacle, retrieve a tool, manipulate an
+        object through multiple state changes, and place it in a goal receptacle.
+        """
+
         initial_state = (
-            "Agent A is at Kitchen, "
-            "CounterTop T is at Kitchen, "
-            "SinkBasin S is at Kitchen, "
-            "Microwave M is at Kitchen, "
-            "Fridge F is at Kitchen, "
-            "Mug U is in CounterTop T, "
-            "Mug U is cleanable, heatable, and coolable, "
+            "Agent A is at LivingRoom, "
+
+            # Kitchen receptacles
+            "CounterTop CT1 is at Kitchen, "
+            "SinkBasin SB1 is at Kitchen, "
+            "Fridge F1 is at Kitchen, "
+            "Cabinet C1 is at Kitchen, "
+            "Drawer D1 is at Kitchen, "
+            "DiningTable DT1 is at Kitchen, "
+
+            # Living room distractor receptacles
+            "CoffeeTable COF1 is at LivingRoom, "
+            "Sofa S1 is at LivingRoom, "
+
+            # Bathroom distractor receptacles
+            "SinkBasin SB2 is at Bathroom, "
+            "Cabinet C2 is at Bathroom, "
+
+            # Openable/closed/open facts
+            "Fridge F1 is openable, "
+            "Fridge F1 is opened, "
+            "Cabinet C1 is openable, "
+            "Drawer D1 is openable, "
+            "Cabinet C2 is openable, "
+
+            # Relevant objects
+            "Apple AP1 is in CounterTop CT1, "
+            "Knife K1 is in Drawer D1, "
+
+            # Distractor objects
+            "Mug M1 is in CoffeeTable COF1, "
+            "SoapBottle SOAP1 is in Cabinet C2, "
+            "Book B1 is in Sofa S1, "
+
+            # Object capabilities
+            "Apple AP1 is pickupable, "
+            "Apple AP1 is cleanable, "
+            "Apple AP1 is coolable, "
+            "Apple AP1 is sliceable, "
+            "Knife K1 is pickupable, "
+            "Mug M1 is pickupable, "
+            "Mug M1 is cleanable, "
+            "SoapBottle SOAP1 is pickupable, "
+            "Book B1 is pickupable, "
+
+            # Agent starts empty-handed
             "Agent A is holding nothing"
         )
 
-        goal_state = "Mug U is clean and Mug U is cool"
+        goal_state = (
+            "Apple AP1 is sliced, "
+            "Apple AP1 is clean, "
+            "Apple AP1 is cool, "
+            "Apple AP1 is in DiningTable DT1"
+        )
 
         solution = [
-            "Pick up object Mug U from receptacle CounterTop T at location Kitchen",
-            "Clean object Mug U using receptacle SinkBasin S at location Kitchen",
-            "Heat object Mug U using receptacle Microwave M at location Kitchen",
-            "Cool object Mug U using receptacle Fridge F at location Kitchen"
+            "Go from location LivingRoom to location Kitchen",
+            "Open receptacle Drawer D1 at location Kitchen",
+            "Pick up object Knife K1 from receptacle Drawer D1 at location Kitchen",
+            "Slice object Apple AP1 at location Kitchen using tool K1",
+            "Put object Knife K1 into receptacle CounterTop CT1 at location Kitchen",
+            "Pick up object Apple AP1 from receptacle CounterTop CT1 at location Kitchen",
+            "Clean object Apple AP1 using receptacle SinkBasin SB1 at location Kitchen",
+            "Cool object Apple AP1 using receptacle Fridge F1 at location Kitchen",
+            "Put object Apple AP1 into receptacle DiningTable DT1 at location Kitchen"
         ]
 
         random_trajectory1 = [
-            "Pick up object Mug U from receptacle CounterTop T at location Kitchen",
-            "Cool object Mug U using receptacle Microwave M at location Kitchen",
-            "Put object Mug U into receptacle CounterTop T at location Kitchen"
+            "Look at location LivingRoom",
+            "Examine receptacle CoffeeTable COF1",
+            "Pick up object Mug M1 from receptacle CoffeeTable COF1 at location LivingRoom",
+            "Go from location LivingRoom to location Kitchen",
+            "Clean object Mug M1 using receptacle SinkBasin SB1 at location Kitchen"
         ]
 
         random_trajectory2 = [
-            "Look at location Kitchen",
-            "Check inventory for agent A",
-            "Pick up object Mug U from receptacle CounterTop T at location Kitchen",
-            "Clean object Mug U using receptacle Fridge F at location Kitchen"
+            "Go from location LivingRoom to location Kitchen",
+            "Pick up object Knife K1 from receptacle Drawer D1 at location Kitchen",
+            "Slice object Apple AP1 at location Kitchen using tool K1"
         ]
 
-        return initial_state, goal_state, solution, [random_trajectory1, random_trajectory2]
+        random_trajectory3 = [
+            "Go from location LivingRoom to location Bathroom",
+            "Open receptacle Cabinet C2 at location Bathroom",
+            "Pick up object SoapBottle SOAP1 from receptacle Cabinet C2 at location Bathroom",
+            "Go from location Bathroom to location Kitchen",
+            "Cool object SoapBottle SOAP1 using receptacle Fridge F1 at location Kitchen"
+        ]
+
+        return initial_state, goal_state, solution, [
+            random_trajectory1,
+            random_trajectory2,
+            random_trajectory3,
+        ]
