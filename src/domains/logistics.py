@@ -194,7 +194,7 @@ class LogisticsDomain:
     @staticmethod
     def get_domain_description() -> str:
         """Get the description of the Logistics domain for the prompt.
-        
+
         Returns:
             Domain description string
         """
@@ -202,32 +202,46 @@ class LogisticsDomain:
 # Logistics Planning Domain
 
 ## Description:
-The Logistics domain involves the transportation of packages between locations using trucks and airplanes.
-The world consists of cities, each containing a set of locations (including an airport).
-Trucks can move packages within a city, and airplanes can move packages between cities.
+The Logistics domain involves transporting packages between locations using trucks and airplanes.
+The world consists of cities, each containing several locations including one airport.
+Trucks move packages within a city; airplanes move packages between city airports.
+
+## Naming conventions:
+- Locations ending in "-0" are airports (e.g., L0-0 is the airport of city C0).
+- Trucks are named T0, T1, …  Airplanes are named A0, A1, …  Packages are named P0, P1, …
 
 ## Rules:
-1. Packages can be loaded onto a vehicle only if the package and vehicle are at the same location.
-2. Packages can be unloaded from a vehicle only at the vehicle's current location.
-3. Trucks can drive between locations within the same city.
-4. Airplanes can fly between airports in different cities.
-5. The goal is to deliver packages to their destination locations.
+1. A package can be loaded onto a vehicle only when both are at the same location.
+2. A package can be unloaded only at the vehicle's current location.
+3. A truck can drive between any two locations in the same city.
+4. An airplane can fly only between airport locations in *different* cities.
+5. Airplanes can only load/unload packages at airport locations.
 
-## Actions:
-- Load a package onto a vehicle
-- Unload a package from a vehicle
-- Drive a truck between locations within a city
-- Fly an airplane between cities
+## Action format (use exactly this syntax):
+- drive-truck <truck> <from-loc> <to-loc> <city>
+- load-truck <package> <truck> <location>
+- unload-truck <package> <truck> <location>
+- fly-airplane <airplane> <from-airport> <to-airport>
+- load-airplane <package> <airplane> <airport>
+- unload-airplane <package> <airplane> <airport>
 
-## Action Format:
-- Load package P onto vehicle V
-- Unload package P from vehicle V at location L
-- Drive truck T from location L1 to location L2
-- Fly airplane A from city C1 to city C2
+## Examples:
+  drive-truck T0 L0-1 L0-0 C0
+  load-truck P0 T0 L0-0
+  unload-truck P0 T0 L0-2
+  fly-airplane A0 L0-0 L1-0
+  load-airplane P0 A0 L0-0
+  unload-airplane P0 A0 L1-0
 
-## State Representation:
-The state is represented by describing where each package and vehicle is located.
-For example: "Package P1 is at location L1, Truck T1 is at location L2, Airplane A1 is at city C1"
+## State representation:
+Each package and vehicle is described by its current location.
+A package inside a vehicle has no direct location until it is unloaded.
+Example sentences:
+  Package P0 is at L0-1.
+  Truck T0 is at L0-0.
+  Airplane A0 is at L1-0.
+  Package P1 is in Truck T0.
+  Package P2 is in Airplane A0.
 """
 
     @staticmethod
@@ -267,52 +281,33 @@ For example: "Package P1 is at location L1, Truck T1 is at location L2, Airplane
     @staticmethod
     def generate_example_problem() -> Tuple[str, str, List[str], List[List[str]]]:
         """Generate an example Logistics problem with solution and random trajectories.
-        
+
+        Uses PDDL naming: L0-0/L0-1/L0-2 in city C0, L1-0/L1-1/L1-2 in city C1.
+        Locations ending in "-0" are airports.
+
         Returns:
-            Tuple of (initial_state_description, goal_state_description, 
+            Tuple of (initial_state_description, goal_state_description,
                      solution_trajectory, random_trajectories)
         """
-        initial_state = ("Package P1 is at Location1, Package P2 is at Location3, "
-                        "Truck T1 is at Location2, Truck T2 is at Location4, "
-                        "Airplane A1 is at Airport1")
-                        
-        goal_state = ("Package P1 is at Location4, Package P2 is at Location2")
-        
+        initial_state = (
+            "Package P0 is at L0-2. Truck T0 is at L0-1. Airplane A0 is at L0-0."
+        )
+        goal_state = "Package P0 is at L0-1."
+
         solution = [
-            "Drive Truck T1 from Location2 to Location1",
-            "Load Package P1 onto Truck T1",
-            "Drive Truck T1 from Location1 to Airport1",
-            "Unload Package P1 from Truck T1 at Airport1",
-            "Load Package P1 onto Airplane A1",
-            "Fly Airplane A1 from Airport1 to Airport2",
-            "Unload Package P1 from Airplane A1 at Airport2",
-            "Drive Truck T2 from Location4 to Airport2",
-            "Load Package P1 onto Truck T2",
-            "Drive Truck T2 from Airport2 to Location4",
-            "Unload Package P1 from Truck T2 at Location4",
-            "Drive Truck T2 from Location4 to Location3",
-            "Load Package P2 onto Truck T2",
-            "Drive Truck T2 from Location3 to Airport2",
-            "Unload Package P2 from Truck T2 at Airport2",
-            "Load Package P2 onto Airplane A1",
-            "Fly Airplane A1 from Airport2 to Airport1",
-            "Unload Package P2 from Airplane A1 at Airport1",
-            "Drive Truck T1 from Airport1 to Location2",
-            "Load Package P2 onto Truck T1",
-            "Unload Package P2 from Truck T1 at Location2"
+            "drive-truck T0 L0-1 L0-2 C0",
+            "load-truck P0 T0 L0-2",
+            "drive-truck T0 L0-2 L0-1 C0",
+            "unload-truck P0 T0 L0-1",
         ]
-        
+
         random_trajectory1 = [
-            "Drive Truck T1 from Location2 to Airport1",
-            "Fly Airplane A1 from Airport1 to Airport2",
-            "Drive Truck T2 from Location4 to Airport2"
+            "drive-truck T0 L0-1 L0-0 C0",
         ]
-        
+
         random_trajectory2 = [
-            "Drive Truck T1 from Location2 to Location1",
-            "Load Package P1 onto Truck T1",
-            "Drive Truck T1 from Location1 to Location2",
-            "Unload Package P1 from Truck T1 at Location2"
+            "drive-truck T0 L0-1 L0-2 C0",
+            "drive-truck T0 L0-2 L0-1 C0",
         ]
-        
-        return initial_state, goal_state, solution, [random_trajectory1, random_trajectory2] 
+
+        return initial_state, goal_state, solution, [random_trajectory1, random_trajectory2]

@@ -32,6 +32,10 @@ from src.aot_plus.blocksworld_examples import (
     get_blocksworld_json_examples,
     get_blocksworld_json_goal_examples,
 )
+from src.aot_plus.logistics_examples import (
+    get_logistics_json_examples,
+    get_logistics_json_goal_examples,
+)
 from src.aot_plus.core import AoTPlus
 from src.domains.blocksworld import BlocksWorldDomain
 from src.domains.logistics import LogisticsDomain
@@ -39,6 +43,7 @@ from src.eval.blocksworld_aot_eval import evaluate_blocksworld_aot_output
 from src.eval.blocksworld_json_goal_eval import evaluate_blocksworld_json_goal_output
 from src.eval.blocksworld_json_structured_eval import evaluate_blocksworld_json_structured_output
 from src.eval.logistics_aot_eval import evaluate_logistics_aot_output
+from src.eval.logistics_json_goal_eval import evaluate_logistics_json_goal_output
 from src.eval.logistics_json_structured_eval import evaluate_logistics_json_structured_output
 from src.sim.blocksworld_sim import nl_state_to_canonical as bw_nl_to_canonical
 from src.sim.blocksworld_sim import validate_json_state as bw_validate_json
@@ -74,30 +79,33 @@ BLOCKSWORLD_PROBLEMS: List[Tuple[str, str]] = [
 ]
 
 LOGISTICS_PROBLEMS: List[Tuple[str, str]] = [
+    # Problem 1: intra-city delivery (P0 from L0-2 to L0-1)
     (
-        "Package P1 is at Location1, Truck T1 is at Location2, Airplane A1 is at Airport1",
-        "Package P1 is at Location2",
+        "Package P0 is at L0-2. Truck T0 is at L0-1. Airplane A0 is at L0-0.",
+        "Package P0 is at L0-1.",
     ),
+    # Problem 2: cross-city delivery (P0 from L0-1 to L1-1)
     (
-        "Package P1 is at Location1, Package P2 is at Location2, "
-        "Truck T1 is at Location2, Airplane A1 is at Airport1",
-        "Package P1 is at Location2, Package P2 is at Location1",
+        "Package P0 is at L0-1. Truck T0 is at L0-2. Truck T1 is at L1-2. Airplane A0 is at L0-0.",
+        "Package P0 is at L1-1.",
     ),
+    # Problem 3: two packages, intra-city swap
     (
-        "Package P1 is at Location1, Truck T1 is at Location2, "
-        "Truck T2 is at Location4, Airplane A1 is at Airport1",
-        "Package P1 is at Location4",
+        "Package P0 is at L0-1. Package P1 is at L0-2. Truck T0 is at L0-0. Airplane A0 is at L0-0.",
+        "Package P0 is at L0-2. Package P1 is at L0-1.",
     ),
+    # Problem 4: two packages, cross-city delivery
     (
-        "Package P1 is at Location1, Package P2 is at Location3, "
-        "Truck T1 is at Location2, Truck T2 is at Location4, Airplane A1 is at Airport1",
-        "Package P1 is at Location4, Package P2 is at Location2",
+        "Package P0 is at L0-1. Package P1 is at L1-1. "
+        "Truck T0 is at L0-1. Truck T1 is at L1-1. Airplane A0 is at L0-0.",
+        "Package P0 is at L1-1. Package P1 is at L0-1.",
     ),
 ]
 
+# PDDL location names: locations ending in "-0" are airports.
 DEFAULT_CITY_MAP = {
-    "Airport1": "City1", "Location1": "City1", "Location2": "City1",
-    "Airport2": "City2", "Location3": "City2", "Location4": "City2",
+    "L0-0": "C0", "L0-1": "C0", "L0-2": "C0",
+    "L1-0": "C1", "L1-1": "C1", "L1-2": "C1",
 }
 
 
@@ -111,8 +119,30 @@ def _bw_nl_to_json_str(nl: str) -> str:
 
 
 def _log_nl_to_json_str(nl: str) -> str:
-    state = log_nl_to_canonical(nl, DEFAULT_CITY_MAP)
+    state = log_nl_to_canonical(nl)
     return json.dumps(state)
+
+
+def _compute_log_goal_diff(current: dict, goal: dict):
+    satisfied, remaining = [], []
+    for pkg, loc in goal["at"].items():
+        if loc is None:
+            continue
+        label = f"{pkg} at {loc}"
+        if current["at"].get(pkg) == loc:
+            satisfied.append(label)
+        else:
+            remaining.append(label)
+    return sorted(satisfied), sorted(remaining)
+
+
+def _log_nl_to_json_goal_str(nl_initial: str, nl_goal: str) -> str:
+    init = log_nl_to_canonical(nl_initial)
+    goal = log_nl_to_canonical(nl_goal)
+    satisfied, remaining = _compute_log_goal_diff(init, goal)
+    init["goal_satisfied"] = satisfied
+    init["goal_remaining"] = remaining
+    return json.dumps(init)
 
 
 def _bw_nl_to_json_goal_str(nl_initial: str, nl_goal: str) -> str:
@@ -165,9 +195,8 @@ def _make_solver(domain: str, condition: str, provider: str) -> AoTPlus:
             examples = (get_blocksworld_json_goal_examples() if condition == "json_goal"
                         else get_blocksworld_json_examples())
         else:
-            # Logistics JSON examples: fall back to text for now
-            solver.add_example(init_ex, goal_ex, sol_ex, rand_ex)
-            return solver
+            examples = (get_logistics_json_goal_examples() if condition == "json_goal"
+                        else get_logistics_json_examples())
         for ex in examples:
             solver.add_formatted_example(ex)
     else:
@@ -185,7 +214,7 @@ def _bw_initial_json(nl: str) -> dict:
 
 
 def _log_initial_json(nl: str) -> dict:
-    return log_nl_to_canonical(nl, DEFAULT_CITY_MAP)
+    return log_nl_to_canonical(nl)
 
 
 # ---------------------------------------------------------------------------
@@ -227,8 +256,12 @@ def _run_one(
         prompt_initial = nl_initial
         prompt_goal    = nl_goal
     elif condition == "json_goal":
-        prompt_initial = _bw_nl_to_json_goal_str(nl_initial, nl_goal)
-        prompt_goal    = _bw_nl_to_json_str(nl_goal)
+        if domain == "blocksworld":
+            prompt_initial = _bw_nl_to_json_goal_str(nl_initial, nl_goal)
+            prompt_goal    = _bw_nl_to_json_str(nl_goal)
+        else:
+            prompt_initial = _log_nl_to_json_goal_str(nl_initial, nl_goal)
+            prompt_goal    = _log_nl_to_json_str(nl_goal)
     else:  # json_structured
         if domain == "blocksworld":
             prompt_initial = _bw_nl_to_json_str(nl_initial)
@@ -280,9 +313,11 @@ def _run_one(
                 result = evaluate_blocksworld_json_structured_output(init_json, raw_output)
         else:
             if condition == "aot_text":
-                result = evaluate_logistics_aot_output(nl_initial, raw_output)
+                result = evaluate_logistics_aot_output(nl_initial, DEFAULT_CITY_MAP, raw_output)
+            elif condition == "json_goal":
+                result = evaluate_logistics_json_goal_output(init_json, DEFAULT_CITY_MAP, raw_output)
             else:
-                result = evaluate_logistics_json_structured_output(init_json, raw_output)
+                result = evaluate_logistics_json_structured_output(init_json, DEFAULT_CITY_MAP, raw_output)
 
         plan_success = result.first_error_step is None and len(result.actions) > 0
         step_errors  = result.step_errors
