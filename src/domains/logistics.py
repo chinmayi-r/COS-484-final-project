@@ -1,5 +1,6 @@
 """Logistics domain implementation for AoT+ demonstration."""
-from typing import Dict, List, Set, Tuple, Optional
+import re
+from typing import Dict, List, Tuple, Optional
 
 class LogisticsState:
     """Representation of a state in the Logistics domain."""
@@ -261,7 +262,6 @@ Example sentences:
         state.add_city("City2", ["Airport2", "Location3", "Location4"])
         
         # Extract package locations
-        import re
         package_pattern = r"Package ([A-Za-z0-9]+) is at ([A-Za-z0-9]+)"
         for match in re.finditer(package_pattern, description):
             package = match.group(1)

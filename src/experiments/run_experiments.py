@@ -110,17 +110,18 @@ DEFAULT_CITY_MAP = {
 
 
 # ---------------------------------------------------------------------------
-# State serialization helpers (NL → JSON string for prompt)
+# Goal-residual helpers
 # ---------------------------------------------------------------------------
 
-def _bw_nl_to_json_str(nl: str) -> str:
-    state = bw_nl_to_canonical(nl)
-    return json.dumps(state)
-
-
-def _log_nl_to_json_str(nl: str) -> str:
-    state = log_nl_to_canonical(nl)
-    return json.dumps(state)
+def _compute_bw_goal_diff(current: dict, goal: dict):
+    satisfied, remaining = [], []
+    for block, dest in goal["on"].items():
+        label = f"{block} on {dest}"
+        (satisfied if current["on"].get(block) == dest else remaining).append(label)
+    for block in goal["clear"]:
+        label = f"{block} clear"
+        (satisfied if block in current["clear"] else remaining).append(label)
+    return sorted(satisfied), sorted(remaining)
 
 
 def _compute_log_goal_diff(current: dict, goal: dict):
@@ -129,48 +130,7 @@ def _compute_log_goal_diff(current: dict, goal: dict):
         if loc is None:
             continue
         label = f"{pkg} at {loc}"
-        if current["at"].get(pkg) == loc:
-            satisfied.append(label)
-        else:
-            remaining.append(label)
-    return sorted(satisfied), sorted(remaining)
-
-
-def _log_nl_to_json_goal_str(nl_initial: str, nl_goal: str) -> str:
-    init = log_nl_to_canonical(nl_initial)
-    goal = log_nl_to_canonical(nl_goal)
-    satisfied, remaining = _compute_log_goal_diff(init, goal)
-    init["goal_satisfied"] = satisfied
-    init["goal_remaining"] = remaining
-    return json.dumps(init)
-
-
-def _bw_nl_to_json_goal_str(nl_initial: str, nl_goal: str) -> str:
-    """Return initial state JSON with goal_satisfied / goal_remaining appended."""
-    import re
-    init = bw_nl_to_canonical(nl_initial)
-    goal = bw_nl_to_canonical(nl_goal)
-
-    satisfied, remaining = _compute_bw_goal_diff(init, goal)
-    init["goal_satisfied"] = satisfied
-    init["goal_remaining"] = remaining
-    return json.dumps(init)
-
-
-def _compute_bw_goal_diff(current: dict, goal: dict):
-    satisfied, remaining = [], []
-    for block, dest in goal["on"].items():
-        label = f"{block} on {dest}"
-        if current["on"].get(block) == dest:
-            satisfied.append(label)
-        else:
-            remaining.append(label)
-    for block in goal["clear"]:
-        label = f"{block} clear"
-        if block in current["clear"]:
-            satisfied.append(label)
-        else:
-            remaining.append(label)
+        (satisfied if current["at"].get(pkg) == loc else remaining).append(label)
     return sorted(satisfied), sorted(remaining)
 
 
@@ -203,18 +163,6 @@ def _make_solver(domain: str, condition: str, provider: str) -> AoTPlus:
         solver.add_example(init_ex, goal_ex, sol_ex, rand_ex)
 
     return solver
-
-
-# ---------------------------------------------------------------------------
-# Metadata helpers
-# ---------------------------------------------------------------------------
-
-def _bw_initial_json(nl: str) -> dict:
-    return bw_nl_to_canonical(nl)
-
-
-def _log_initial_json(nl: str) -> dict:
-    return log_nl_to_canonical(nl)
 
 
 # ---------------------------------------------------------------------------
@@ -251,24 +199,28 @@ def _run_one(
     max_tokens: int,
     model_name: str,
 ) -> Dict[str, Any]:
-    # Build prompt inputs
+    # Parse NL → canonical dicts once; reused for both prompt building and metadata.
+    if domain == "blocksworld":
+        init_json = bw_nl_to_canonical(nl_initial)
+        goal_json = bw_nl_to_canonical(nl_goal)
+    else:
+        init_json = log_nl_to_canonical(nl_initial)
+        goal_json = log_nl_to_canonical(nl_goal)
+
+    # Build prompt strings from already-parsed dicts.
     if condition == "aot_text":
         prompt_initial = nl_initial
         prompt_goal    = nl_goal
     elif condition == "json_goal":
         if domain == "blocksworld":
-            prompt_initial = _bw_nl_to_json_goal_str(nl_initial, nl_goal)
-            prompt_goal    = _bw_nl_to_json_str(nl_goal)
+            sat, rem = _compute_bw_goal_diff(init_json, goal_json)
         else:
-            prompt_initial = _log_nl_to_json_goal_str(nl_initial, nl_goal)
-            prompt_goal    = _log_nl_to_json_str(nl_goal)
+            sat, rem = _compute_log_goal_diff(init_json, goal_json)
+        prompt_initial = json.dumps({**init_json, "goal_satisfied": sat, "goal_remaining": rem})
+        prompt_goal    = json.dumps(goal_json)
     else:  # json_structured
-        if domain == "blocksworld":
-            prompt_initial = _bw_nl_to_json_str(nl_initial)
-            prompt_goal    = _bw_nl_to_json_str(nl_goal)
-        else:
-            prompt_initial = _log_nl_to_json_str(nl_initial)
-            prompt_goal    = _log_nl_to_json_str(nl_goal)
+        prompt_initial = json.dumps(init_json)
+        prompt_goal    = json.dumps(goal_json)
 
     raw_output = solver.solve(prompt_initial, prompt_goal, temperature=temperature,
                               max_tokens=max_tokens)
@@ -277,14 +229,6 @@ def _run_one(
     # Save raw output
     raw_path = _raw_path(output_dir, domain, condition, idx)
     _save(raw_path, raw_output)
-
-    # Build metadata
-    if domain == "blocksworld":
-        init_json = _bw_initial_json(nl_initial)
-        goal_json = _bw_initial_json(nl_goal)
-    else:
-        init_json = _log_initial_json(nl_initial)
-        goal_json = _log_initial_json(nl_goal)
 
     meta = {
         "problem_id":         f"{idx:03d}",

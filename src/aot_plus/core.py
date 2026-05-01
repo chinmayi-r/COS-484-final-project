@@ -1,5 +1,5 @@
 """Core implementation of the Algorithm of Thoughts Plus (AoT+) methodology."""
-from typing import Dict, List, Optional, Any, Callable, Tuple
+from typing import Dict, List, Optional, Any, Tuple
 import re
 
 from src.models.llm_client import LLMClient, get_llm_client
@@ -13,11 +13,12 @@ class AoTPlusPromptBuilder:
         self.use_json_state = use_json_state
         self.state_memoization_interval = state_memoization_interval
         self.examples = []
-        self.formatted_examples: List[str] = []  # pre-formatted strings for JSON mode
-    
+        self.formatted_examples: List[str] = []
+        self._formatted_examples_block: str = ""  # pre-built for JSON prompt reuse
+
     def add_formatted_example(self, example_str: str) -> None:
-        """Add a pre-formatted example string (used for JSON mode where states are hardcoded)."""
         self.formatted_examples.append(example_str)
+        self._formatted_examples_block += f"{example_str}\n---\n\n"
 
     def add_example(self, initial_state: str, goal_state: str, solution_trajectory: List[str],
                    random_trajectories: List[List[str]]) -> None:
@@ -201,9 +202,7 @@ state into the goal state.
 
 ## Examples:
 """
-        for ex in self.formatted_examples:
-            prompt += f"{ex}\n---\n\n"
-
+        prompt += self._formatted_examples_block
         prompt += f"""## Problem to Solve:
 
 Initial state (JSON):

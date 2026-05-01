@@ -1,5 +1,6 @@
 """Blocksworld domain implementation for AoT+ demonstration."""
-from typing import Dict, List, Set, Tuple, Optional
+import re
+from typing import Dict, List, Tuple, Optional
 
 class BlocksWorldState:
     """Representation of a state in the Blocksworld domain."""
@@ -127,7 +128,6 @@ For example: "Block A is on the table, Block B is on Block A, Block C is on the 
         """
         # Extract block names from the description
         block_pattern = r"Block ([A-Za-z0-9]+)"
-        import re
         blocks = set(re.findall(block_pattern, description))
         
         # Create state with all blocks initially on the table
