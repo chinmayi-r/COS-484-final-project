@@ -269,12 +269,22 @@ LOGISTICS_PROBLEMS: List[Tuple[str, str]] = [
 # ---------------------------------------------------------------------------
 
 def _bw_goal_satisfied(final_state: Dict[str, Any], goal_nl: str) -> bool:
-    """Check if the final blocksworld state satisfies the NL goal."""
-    goal_state = bw_nl_to_canonical(goal_nl)
-    for block, dest in goal_state["on"].items():
+    """Check if the final blocksworld state satisfies the NL goal.
+
+    Parses only predicates that are *explicitly stated* in goal_nl so that
+    partial goal specifications (e.g. "Block C is on Block B" with no mention
+    of other blocks) don't generate spurious 'block X on table' constraints.
+    """
+    for m in re.finditer(r"Block\s+(\w+)\s+is\s+on\s+Block\s+(\w+)", goal_nl, re.IGNORECASE):
+        block, dest = m.group(1).upper(), m.group(2).upper()
         if final_state["on"].get(block) != dest:
             return False
-    for block in goal_state["clear"]:
+    for m in re.finditer(r"Block\s+(\w+)\s+is\s+on\s+the\s+table", goal_nl, re.IGNORECASE):
+        block = m.group(1).upper()
+        if final_state["on"].get(block) != "table":
+            return False
+    for m in re.finditer(r"Block\s+(\w+)\s+is\s+clear", goal_nl, re.IGNORECASE):
+        block = m.group(1).upper()
         if block not in final_state["clear"]:
             return False
     return True
@@ -478,9 +488,15 @@ def main():
     parser.add_argument("--domain",   default="both",
                         choices=["blocksworld", "logistics", "both"])
     parser.add_argument("--n_bw",  type=int, default=20,
-                        help="Number of Blocksworld problems (max 20)")
+                        help="Number of Blocksworld problems to run")
     parser.add_argument("--n_log", type=int, default=15,
-                        help="Number of Logistics problems (max 15)")
+                        help="Number of Logistics problems to run")
+    parser.add_argument("--seed",  type=int, default=42,
+                        help="Random seed for PlanBench instance selection")
+    parser.add_argument("--no_planbench", action="store_true",
+                        help="Use hardcoded fallback problems instead of PlanBench")
+    parser.add_argument("--cache_dir", default=".planbench_cache",
+                        help="Local directory for caching downloaded PlanBench PDDL files")
     parser.add_argument("--max_tokens", type=int, default=3000)
     parser.add_argument("--delay", type=float, default=1.0,
                         help="Seconds between API calls")
@@ -503,16 +519,45 @@ def main():
         sys.exit(1)
 
     model_map = {
-        "openai":      Config.OPENAI_MODEL_NAME or "gpt-4o-mini",
-        "sandbox":     Config.SANDBOX_MODEL_NAME or "gpt-4o-mini",
+        "openai":       Config.OPENAI_MODEL_NAME or "gpt-4o-mini",
+        "sandbox":      Config.SANDBOX_MODEL_NAME or "gpt-4o-mini",
         "azure_openai": Config.AZURE_OPENAI_DEPLOYMENT_NAME or "unknown",
     }
     model_name = model_map[args.provider]
 
+    # ------------------------------------------------------------------
+    # Load problem banks
+    # ------------------------------------------------------------------
+    use_planbench = not args.no_planbench
+    city_map = LOGISTICS_CITY_MAP  # default; overwritten by PlanBench parser
+
+    if use_planbench:
+        try:
+            from src.benchmarks.planbench import (
+                get_blocksworld_problems,
+                get_logistics_problems,
+            )
+            print(f"Downloading PlanBench instances (seed={args.seed}, "
+                  f"cache={args.cache_dir!r}) …")
+            bw_dicts  = get_blocksworld_problems(args.n_bw,  args.seed, cache_dir=args.cache_dir)
+            log_dicts, city_map = get_logistics_problems(args.n_log, args.seed, cache_dir=args.cache_dir)
+            bw_probs  = [(d["initial_state"], d["goal_state"]) for d in bw_dicts]
+            log_probs = [(d["initial_state"], d["goal_state"]) for d in log_dicts]
+            print(f"  Blocksworld : {len(bw_probs)} problems "
+                  f"(ids {[d['instance_id'] for d in bw_dicts]})")
+            print(f"  Logistics   : {len(log_probs)} problems "
+                  f"(ids {[d['instance_id'] for d in log_dicts]})\n")
+        except Exception as e:
+            print(f"Warning: PlanBench download failed ({e}). Falling back to hardcoded bank.")
+            use_planbench = False
+
+    if not use_planbench:
+        bw_probs  = BLOCKSWORLD_PROBLEMS[:args.n_bw]
+        log_probs = LOGISTICS_PROBLEMS[:args.n_log]
+
     summaries = {}
 
     if args.domain in ("blocksworld", "both"):
-        bw_probs = BLOCKSWORLD_PROBLEMS[:args.n_bw]
         summaries["blocksworld"] = evaluate_domain(
             domain="blocksworld",
             problems=bw_probs,
@@ -524,7 +569,6 @@ def main():
         )
 
     if args.domain in ("logistics", "both"):
-        log_probs = LOGISTICS_PROBLEMS[:args.n_log]
         summaries["logistics"] = evaluate_domain(
             domain="logistics",
             problems=log_probs,
@@ -533,12 +577,13 @@ def main():
             max_tokens=args.max_tokens,
             delay_secs=args.delay,
             output_dir=args.output_dir,
-            city_map=LOGISTICS_CITY_MAP,
+            city_map=city_map,
         )
 
     # Print results table
+    source = "PlanBench" if use_planbench else "fallback bank"
     print(f"\n{'='*60}")
-    print(f"  AoT+ Results — {model_name}")
+    print(f"  AoT+ Results — {model_name}  [{source}]")
     print(f"  {'Domain':<15} {'Solved':>8} {'Accuracy':>10}")
     print(f"  {'-'*35}")
     for domain, s in summaries.items():
