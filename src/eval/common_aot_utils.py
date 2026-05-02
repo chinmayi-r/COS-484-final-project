@@ -7,12 +7,12 @@ from src.eval.common_types import ParsedTextCheckpoint
 
 
 ACTION_PATTERN = re.compile(
-    r"ACTION:\s*(.*?)(?=\n(?:STATE\s+[0-9]+(?:\.[0-9]+)?\s*:|ACTION:|Plan summary:)|\Z)",
+    r"ACTION:\s*(.*?)(?=\n[ \t]*(?:STATE\s+[0-9]+(?:\.[0-9]+)?\s*:|ACTION:|Plan summary:)|\Z)",
     re.DOTALL,
 )
 
 STATE_PATTERN = re.compile(
-    r"STATE\s+([0-9]+(?:\.[0-9]+)?)\s*:\s*(.*?)(?=\n(?:STATE\s+[0-9]+(?:\.[0-9]+)?\s*:|ACTION:|Plan summary:)|\Z)",
+    r"STATE\s+([0-9]+(?:\.[0-9]+)?)\s*:\s*(.*?)(?=\n[ \t]*(?:STATE\s+[0-9]+(?:\.[0-9]+)?\s*:|ACTION:|Plan summary:)|\Z)",
     re.DOTALL,
 )
 

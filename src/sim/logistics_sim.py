@@ -305,11 +305,13 @@ def parse_action_text(action_text: str) -> ParsedAction:
 
 def _vehicle_type(vehicle: str) -> str:
     """
-    Infer vehicle type from the agreed naming convention.
+    Infer vehicle type from naming convention (case-insensitive).
+    PlanBench uses lowercase names (t0, a0); our examples use uppercase (T0, A0).
     """
-    if vehicle.startswith("T"):
+    v = vehicle.lower()
+    if v.startswith("t"):
         return "truck"
-    if vehicle.startswith("A"):
+    if v.startswith("a"):
         return "airplane"
     raise ValueError(f"Unknown vehicle type for id: {vehicle}")
 
