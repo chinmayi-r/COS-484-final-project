@@ -19,12 +19,14 @@ class LogisticsMeta:
     city_map: Dict[str, str]
 
     def city_of(self, location: str) -> str:
-        if location not in self.city_map:
+        # Normalise to lowercase so uppercase model output (L1-1) matches lowercase map keys (l1-1)
+        loc = location.lower()
+        if loc not in self.city_map:
             raise KeyError(f"Unknown location: {location}")
-        return self.city_map[location]
+        return self.city_map[loc]
 
     def is_airport(self, location: str) -> bool:
-        return location.endswith("-0")
+        return location.lower().endswith("-0")
 
 
 @dataclass
@@ -134,7 +136,8 @@ def validate_city_map(city_map: Dict[str, Any]) -> LogisticsMeta:
         if not isinstance(loc, str) or not isinstance(city, str):
             raise ValueError("city_map must map string location -> string city")
 
-    return LogisticsMeta(city_map=dict(city_map))
+    # Normalise all keys/values to lowercase for case-insensitive lookup
+    return LogisticsMeta(city_map={k.lower(): v.lower() for k, v in city_map.items()})
 
 
 def validate_json_state(state_json: Dict[str, Any]) -> Dict[str, Any]:
@@ -215,22 +218,22 @@ def nl_state_to_canonical(state_text: str) -> Dict[str, Any]:
     inside: Dict[str, Optional[str]] = {}
 
     for pkg, loc in PACKAGE_AT_PATTERN.findall(state_text):
-        at[pkg] = loc
-        inside.setdefault(pkg, None)
+        at[pkg.lower()] = loc.lower()
+        inside.setdefault(pkg.lower(), None)
 
     for pkg, truck in PACKAGE_IN_TRUCK_PATTERN.findall(state_text):
-        at[pkg] = None
-        inside[pkg] = truck
+        at[pkg.lower()] = None
+        inside[pkg.lower()] = truck.lower()
 
     for pkg, airplane in PACKAGE_IN_AIRPLANE_PATTERN.findall(state_text):
-        at[pkg] = None
-        inside[pkg] = airplane
+        at[pkg.lower()] = None
+        inside[pkg.lower()] = airplane.lower()
 
     for truck, loc in TRUCK_AT_PATTERN.findall(state_text):
-        at[truck] = loc
+        at[truck.lower()] = loc.lower()
 
     for airplane, loc in AIRPLANE_AT_PATTERN.findall(state_text):
-        at[airplane] = loc
+        at[airplane.lower()] = loc.lower()
 
     if not at and not inside:
         raise ValueError("Could not parse any Logistics state facts")
@@ -278,27 +281,27 @@ def parse_action_text(action_text: str) -> ParsedAction:
 
     m = DRIVE_TRUCK_PATTERN.fullmatch(text)
     if m:
-        return ParsedAction(text, "drive-truck", m.groups())
+        return ParsedAction(text, "drive-truck", tuple(g.lower() for g in m.groups()))
 
     m = LOAD_TRUCK_PATTERN.fullmatch(text)
     if m:
-        return ParsedAction(text, "load-truck", m.groups())
+        return ParsedAction(text, "load-truck", tuple(g.lower() for g in m.groups()))
 
     m = UNLOAD_TRUCK_PATTERN.fullmatch(text)
     if m:
-        return ParsedAction(text, "unload-truck", m.groups())
+        return ParsedAction(text, "unload-truck", tuple(g.lower() for g in m.groups()))
 
     m = FLY_AIRPLANE_PATTERN.fullmatch(text)
     if m:
-        return ParsedAction(text, "fly-airplane", m.groups())
+        return ParsedAction(text, "fly-airplane", tuple(g.lower() for g in m.groups()))
 
     m = LOAD_AIRPLANE_PATTERN.fullmatch(text)
     if m:
-        return ParsedAction(text, "load-airplane", m.groups())
+        return ParsedAction(text, "load-airplane", tuple(g.lower() for g in m.groups()))
 
     m = UNLOAD_AIRPLANE_PATTERN.fullmatch(text)
     if m:
-        return ParsedAction(text, "unload-airplane", m.groups())
+        return ParsedAction(text, "unload-airplane", tuple(g.lower() for g in m.groups()))
 
     raise ValueError(f"Could not parse Logistics action: {action_text}")
 

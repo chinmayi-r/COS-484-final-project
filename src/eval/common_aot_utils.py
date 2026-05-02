@@ -6,24 +6,36 @@ from typing import Any, Callable, Dict, List
 from src.eval.common_types import ParsedTextCheckpoint
 
 
+# Matches ACTION: (with optional surrounding markdown bold **)
 ACTION_PATTERN = re.compile(
-    r"ACTION:\s*(.*?)(?=\n[ \t]*(?:STATE\s+[0-9]+(?:\.[0-9]+)?\s*:|ACTION:|Plan summary:)|\Z)",
+    r"\*{0,2}ACTION:\*{0,2}\s*(.*?)(?=\n[ \t]*\*{0,2}(?:STATE\s+[0-9]+(?:\.[0-9]+)?\s*:|ACTION:|Plan summary:)|\Z)",
     re.DOTALL,
 )
 
 STATE_PATTERN = re.compile(
-    r"STATE\s+([0-9]+(?:\.[0-9]+)?)\s*:\s*(.*?)(?=\n[ \t]*(?:STATE\s+[0-9]+(?:\.[0-9]+)?\s*:|ACTION:|Plan summary:)|\Z)",
+    r"\*{0,2}STATE\s+([0-9]+(?:\.[0-9]+)?)\s*:\*{0,2}\s*(.*?)(?=\n[ \t]*\*{0,2}(?:STATE\s+[0-9]+(?:\.[0-9]+)?\s*:|ACTION:|Plan summary:)|\Z)",
     re.DOTALL,
 )
+
+
+def _first_line(text: str) -> str:
+    """Return only the first non-empty line of text (strips multi-line bleed)."""
+    for line in text.splitlines():
+        line = line.strip().lstrip("-* ")
+        if line:
+            return line
+    return text.strip()
 
 
 def extract_actions(raw_output: str) -> List[str]:
     """
     Extract AoT+ ACTION strings in order.
+    Only the first line of each match is kept — prevents STATE bleed from
+    being included when the model uses non-standard formatting.
     """
     actions: List[str] = []
     for m in ACTION_PATTERN.finditer(raw_output):
-        text = m.group(1).strip()
+        text = _first_line(m.group(1))
         if text:
             actions.append(text)
     return actions
