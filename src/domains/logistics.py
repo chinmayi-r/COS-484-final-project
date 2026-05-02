@@ -315,4 +315,5 @@ For example: "Package P1 is at location L1, Truck T1 is at location L2, Airplane
             "Unload Package P1 from Truck T1 at Location2"
         ]
         
-        return initial_state, goal_state, solution, [random_trajectory1, random_trajectory2] 
+        return initial_state, goal_state, solution, [random_trajectory1, random_trajectory2]
+    

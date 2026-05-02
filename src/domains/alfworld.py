@@ -21,8 +21,6 @@ class ALFWorldState:
         self.is_receptacle_object = set()
         self.is_receptacle_object_full = set()
         self.was_in_receptacle = set()
-        self.checked = set()
-        self.examined = set()
         self.receptacle_type = {}
         self.can_contain = set()
         self.object_type = {}
@@ -58,65 +56,14 @@ class ALFWorldState:
             return True
         return receptacle in self.opened
 
-    def look(self, agent, location):
-        # Preconditions: (atLocation ?a ?l)
-        if self.at_location.get(agent) != location:
-            return False
-        # Effects: (checked ?l)
-        self.checked.add(location)
-        return True
-
-    def inventory(self, agent):
-        # Preconditions: none
-        # Effects: (checked ?a)
-        self.checked.add(agent)
-        return True
-
-    def examine_receptacle(self, agent, receptacle):
-        # Preconditions: agent and receptacle at same location
-        agent_loc = self.at_location.get(agent)
-        if not agent_loc:
-            return False
-        if self.receptacle_at_location.get(receptacle) != agent_loc:
-            return False
-        # Effects: (checked ?r)
-        self.checked.add(receptacle)
-        return True
-
-    def examine_object(self, agent, obj):
-        # Preconditions:
-        # (or
-        #   (exists (... ?r) (atLocation ?a ?l) (receptacleAtLocation ?r ?l)
-        #                    (inReceptacle ?o ?r) and receptacle open if openable)
-        #   (holds ?a ?o))
-        if self._agent_holding(agent) == obj:
-            self.checked.add(obj)
-            return True
-
-        agent_loc = self.at_location.get(agent)
-        if not agent_loc:
-            return False
-
-        recep = self.in_receptacle.get(obj)
-        if not recep:
-            return False
-        if self.receptacle_at_location.get(recep) != agent_loc:
-            return False
-        if not self._can_access_in_receptacle(obj, recep):
-            return False
-
-        # Effects: (checked ?o)
-        self.checked.add(obj)
-        return True
-
-    def goto_location(self, agent, start_location, end_location, receptacle_at_destination):
-        # Preconditions: at start and provided receptacle at destination
+    def goto_location(self, agent, start_location, end_location):
         if self.at_location.get(agent) != start_location:
             return False
-        if self.receptacle_at_location.get(receptacle_at_destination) != end_location:
+
+        known_locations = set(self.receptacle_at_location.values())
+        if end_location not in known_locations:
             return False
 
-        # Effects: move agent to destination
         self.at_location[agent] = end_location
         return True
 
@@ -131,9 +78,8 @@ class ALFWorldState:
         if receptacle in self.opened:
             return False
 
-        # Effects: opened + checked
+        # Effects: opened
         self.opened.add(receptacle)
-        self.checked.add(receptacle)
         return True
 
     def close_object(self, agent, location, receptacle):
@@ -174,8 +120,7 @@ class ALFWorldState:
             del self.object_at_location[obj]
         return True
 
-    def put_object(self, agent, location, obj, receptacle, object_type, receptacle_type):
-        # Preconditions from PutObject
+    def put_object(self, agent, location, obj, receptacle):
         if self.holds.get(agent) != obj:
             return False
         if self.at_location.get(agent) != location:
@@ -184,14 +129,13 @@ class ALFWorldState:
             return False
         if receptacle in self.openable and receptacle not in self.opened:
             return False
-        if self.object_type.get(obj) != object_type:
-            return False
-        if self.receptacle_type.get(receptacle) != receptacle_type:
-            return False
+
+        object_type = self.object_type.get(obj)
+        receptacle_type = self.receptacle_type.get(receptacle)
+
         if (receptacle_type, object_type) not in self.can_contain:
             return False
 
-        # Effects
         self.in_receptacle[obj] = receptacle
         self.object_at_location[obj] = location
         del self.holds[agent]
@@ -202,7 +146,7 @@ class ALFWorldState:
         # Preconditions from CleanObject
         if obj not in self.cleanable:
             return False
-        if self.receptacle_type.get(receptacle) not in {"SinkType", "SinkBasinType"}:
+        if self.receptacle_type.get(receptacle) not in {"Sink", "SinkBasin"}:
             return False
         if self.at_location.get(agent) != location:
             return False
@@ -219,7 +163,7 @@ class ALFWorldState:
         # Preconditions from HeatObject
         if obj not in self.heatable:
             return False
-        if self.receptacle_type.get(receptacle) != "MicrowaveType":
+        if self.receptacle_type.get(receptacle) != "Microwave":
             return False
         if self.at_location.get(agent) != location:
             return False
@@ -237,7 +181,7 @@ class ALFWorldState:
         # Preconditions from CoolObject
         if obj not in self.coolable:
             return False
-        if self.receptacle_type.get(receptacle) != "FridgeType":
+        if self.receptacle_type.get(receptacle) != "Fridge":
             return False
         if self.at_location.get(agent) != location:
             return False
@@ -275,7 +219,7 @@ class ALFWorldState:
         if cuttable_object not in self.sliceable:
             return False
         knife_type = self.object_type.get(knife_object)
-        if knife_type not in {"KnifeType", "ButterKnifeType"}:
+        if knife_type not in {"Knife", "ButterKnife"}:
             return False
         if self.at_location.get(agent) != location:
             return False
@@ -292,13 +236,160 @@ class ALFWorldState:
         facts = []
 
         for agent, location in sorted(self.at_location.items()):
-            facts.append("atLocation({0}, {1})".format(agent, location))
-        for obj, recep in sorted(self.in_receptacle.items()):
-            facts.append("inReceptacle({0}, {1})".format(obj, recep))
-        for agent, obj in sorted(self.holds.items()):
-            facts.append("holds({0}, {1})".format(agent, obj))
+            facts.append(f"Agent {agent} is at {location}")
+
+            if agent in self.holds:
+                obj = self.holds[agent]
+                obj_type = self.object_type.get(obj, "Object")
+                facts.append(f"Agent {agent} is holding {obj_type} {obj}")
+            else:
+                facts.append(f"Agent {agent} is holding nothing")
+
+        for receptacle, location in sorted(self.receptacle_at_location.items()):
+            receptacle_type = self.receptacle_type.get(receptacle, "Receptacle")
+            facts.append(f"{receptacle_type} {receptacle} is at {location}")
+
+            if receptacle in self.openable:
+                facts.append(f"{receptacle_type} {receptacle} is openable")
+
+            if receptacle in self.opened:
+                facts.append(f"{receptacle_type} {receptacle} is opened")
+
+        for obj, receptacle in sorted(self.in_receptacle.items()):
+            obj_type = self.object_type.get(obj, "Object")
+            receptacle_type = self.receptacle_type.get(receptacle, "Receptacle")
+            facts.append(f"{obj_type} {obj} is in {receptacle_type} {receptacle}")
+
+        held_objects = set(self.holds.values())
+        contained_objects = set(self.in_receptacle.keys())
+
+        for obj, location in sorted(self.object_at_location.items()):
+            if obj in held_objects or obj in contained_objects:
+                continue
+
+            obj_type = self.object_type.get(obj, "Object")
+            facts.append(f"{obj_type} {obj} is at {location}")
+
+        property_sets = [
+            ("pickupable", self.pickupable),
+            ("moveable", self.moveable),
+            ("cleanable", self.cleanable),
+            ("heatable", self.heatable),
+            ("coolable", self.coolable),
+            ("toggleable", self.toggleable),
+            ("sliceable", self.sliceable),
+            ("clean", self.is_clean),
+            ("hot", self.is_hot),
+            ("cool", self.is_cool),
+            ("on", self.is_on),
+            ("toggled", self.is_toggled),
+            ("sliced", self.is_sliced),
+        ]
+
+        for property_name, objects in property_sets:
+            for obj in sorted(objects):
+                obj_type = self.object_type.get(obj, "Object")
+                facts.append(f"{obj_type} {obj} is {property_name}")
 
         return ", ".join(facts)
+    
+    @staticmethod
+    def apply_action(current_state_description: str, action_description: str) -> str:
+        state = ALFWorldDomain.parse_state_description(current_state_description)
+        action = action_description.strip()
+        agent = next(iter(state.at_location))
+
+        match = re.fullmatch(
+            r"Go from location ([A-Za-z0-9_]+) to location ([A-Za-z0-9_]+)",
+            action,
+        )
+        if match:
+            start_location, end_location = match.groups()
+            state.goto_location(agent, start_location, end_location)
+            return str(state)
+
+        match = re.fullmatch(
+            r"Open receptacle ([A-Za-z0-9_]+) at location ([A-Za-z0-9_]+)",
+            action,
+        )
+        if match:
+            receptacle, location = match.groups()
+            state.open_object(agent, location, receptacle)
+            return str(state)
+
+        match = re.fullmatch(
+            r"Close receptacle ([A-Za-z0-9_]+) at location ([A-Za-z0-9_]+)",
+            action,
+        )
+        if match:
+            receptacle, location = match.groups()
+            state.close_object(agent, location, receptacle)
+            return str(state)
+
+        match = re.fullmatch(
+            r"Pick up object ([A-Za-z0-9_]+) from receptacle ([A-Za-z0-9_]+) at location ([A-Za-z0-9_]+)",
+            action,
+        )
+        if match:
+            obj, receptacle, location = match.groups()
+            state.pickup_object(agent, location, obj, receptacle)
+            return str(state)
+
+        match = re.fullmatch(
+            r"Put object ([A-Za-z0-9_]+) into receptacle ([A-Za-z0-9_]+) at location ([A-Za-z0-9_]+)",
+            action,
+        )
+        if match:
+            obj, receptacle, location = match.groups()
+            state.put_object(agent, location, obj, receptacle)
+            return str(state)
+
+        match = re.fullmatch(
+            r"Clean object ([A-Za-z0-9_]+) using receptacle ([A-Za-z0-9_]+) at location ([A-Za-z0-9_]+)",
+            action,
+        )
+        if match:
+            obj, receptacle, location = match.groups()
+            state.clean_object(agent, location, receptacle, obj)
+            return str(state)
+
+        match = re.fullmatch(
+            r"Heat object ([A-Za-z0-9_]+) using receptacle ([A-Za-z0-9_]+) at location ([A-Za-z0-9_]+)",
+            action,
+        )
+        if match:
+            obj, receptacle, location = match.groups()
+            state.heat_object(agent, location, receptacle, obj)
+            return str(state)
+
+        match = re.fullmatch(
+            r"Cool object ([A-Za-z0-9_]+) using receptacle ([A-Za-z0-9_]+) at location ([A-Za-z0-9_]+)",
+            action,
+        )
+        if match:
+            obj, receptacle, location = match.groups()
+            state.cool_object(agent, location, receptacle, obj)
+            return str(state)
+
+        match = re.fullmatch(
+            r"Toggle object ([A-Za-z0-9_]+) in receptacle ([A-Za-z0-9_]+) at location ([A-Za-z0-9_]+)",
+            action,
+        )
+        if match:
+            obj, receptacle, location = match.groups()
+            state.toggle_object(agent, location, obj, receptacle)
+            return str(state)
+
+        match = re.fullmatch(
+            r"Slice object ([A-Za-z0-9_]+) at location ([A-Za-z0-9_]+) using tool ([A-Za-z0-9_]+)",
+            action,
+        )
+        if match:
+            obj, location, tool = match.groups()
+            state.slice_object(agent, location, obj, tool)
+            return str(state)
+
+        return str(state)
 
     def is_goal_state(self, goal_state):
         # Goal check uses subset semantics: every fact in goal_state must hold here.
@@ -318,8 +409,6 @@ class ALFWorldState:
             "is_receptacle_object",
             "is_receptacle_object_full",
             "was_in_receptacle",
-            "checked",
-            "examined",
             "can_contain",
             "holds_any",
             "holds_any_receptacle_object",
@@ -368,37 +457,6 @@ The ALFWorld domain involves household task planning in indoor environments.
 An agent navigates between locations, interacts with receptacles, and manipulates objects to satisfy task goals.
 Objects may need to be moved, placed, cleaned, heated, cooled, toggled, or sliced depending on the goal.
 
-## Receptacle Types:
-- ArmChairType
-- BathtubBasinType
-- BedType
-- CabinetType
-- CartType
-- CoffeeMachineType
-- CoffeeTableType
-- CounterTopType
-- DeskType
-- DiningTableType
-- DrawerType
-- DresserType
-- FridgeType
-- GarbageCanType
-- HandTowelHolderType
-- LaundryHamperType
-- MicrowaveType
-- OttomanType
-- SafeType
-- ShelfType
-- SideTableType
-- SinkBasinType
-- SofaType
-- StoveBurnerType
-- TVStandType
-- ToasterType
-- ToiletPaperHangerType
-- ToiletType
-- TowelHolderType
-
 ## Rules:
 1. The agent can only act at its current location.
 2. A receptacle can be opened only if it is openable and currently closed.
@@ -413,10 +471,6 @@ Objects may need to be moved, placed, cleaned, heated, cooled, toggled, or slice
 11. Slicing is valid only for sliceable objects when the agent holds a knife or butter knife.
 
 ## Actions:
-- Look around the current location
-- Check inventory
-- Examine a receptacle
-- Examine an object
 - Go from one location to another
 - Open a receptacle
 - Close a receptacle
@@ -429,10 +483,6 @@ Objects may need to be moved, placed, cleaned, heated, cooled, toggled, or slice
 - Slice an object with a knife-like tool
 
 ## Action Format:
-- Look at location L
-- Check inventory for agent A
-- Examine receptacle R
-- Examine object O
 - Go from location L1 to location L2
 - Open receptacle R at location L
 - Close receptacle R at location L
@@ -476,7 +526,7 @@ The state is represented by facts about:
             r"([A-Za-z0-9_]+) is at ([A-Za-z0-9_]+)"
         )
         for match in re.finditer(receptacle_pattern, description):
-            receptacle_type = match.group(1) + "Type"
+            receptacle_type = match.group(1)
             receptacle = match.group(2)
             location = match.group(3)
             state.receptacle_at_location[receptacle] = location
@@ -492,7 +542,7 @@ The state is represented by facts about:
             r"([A-Za-z0-9_]+)"
         )
         for match in re.finditer(object_in_receptacle_pattern, description):
-            object_type = match.group(1) + "Type"
+            object_type = match.group(1)
             obj = match.group(2)
             receptacle = match.group(4)
 
@@ -520,7 +570,7 @@ The state is represented by facts about:
             }:
                 continue
 
-            state.object_type[obj] = obj_type_name + "Type"
+            state.object_type[obj] = obj_type_name
             state.object_at_location[obj] = location
 
         # Openable / opened:
@@ -585,58 +635,32 @@ The state is represented by facts about:
 
     @staticmethod
     def generate_example_problem():
-        """Generate a natural-language ALFWorld example problem.
-
-        This example is intentionally more ALFWorld-like than a minimal toy task:
-        the agent must navigate, open a receptacle, retrieve a tool, manipulate an
-        object through multiple state changes, and place it in a goal receptacle.
-        """
+        """Generate a natural-language ALFWorld example problem."""
 
         initial_state = (
             "Agent A is at LivingRoom, "
 
-            # Kitchen receptacles
+            # Locations / receptacles
             "CounterTop CT1 is at Kitchen, "
-            "SinkBasin SB1 is at Kitchen, "
-            "Fridge F1 is at Kitchen, "
-            "Cabinet C1 is at Kitchen, "
             "Drawer D1 is at Kitchen, "
             "DiningTable DT1 is at Kitchen, "
-
-            # Living room distractor receptacles
             "CoffeeTable COF1 is at LivingRoom, "
-            "Sofa S1 is at LivingRoom, "
 
-            # Bathroom distractor receptacles
-            "SinkBasin SB2 is at Bathroom, "
-            "Cabinet C2 is at Bathroom, "
-
-            # Openable/closed/open facts
-            "Fridge F1 is openable, "
-            "Fridge F1 is opened, "
-            "Cabinet C1 is openable, "
+            # Openable receptacle
             "Drawer D1 is openable, "
-            "Cabinet C2 is openable, "
 
             # Relevant objects
             "Apple AP1 is in CounterTop CT1, "
             "Knife K1 is in Drawer D1, "
 
-            # Distractor objects
+            # Distractor object
             "Mug M1 is in CoffeeTable COF1, "
-            "SoapBottle SOAP1 is in Cabinet C2, "
-            "Book B1 is in Sofa S1, "
 
             # Object capabilities
             "Apple AP1 is pickupable, "
-            "Apple AP1 is cleanable, "
-            "Apple AP1 is coolable, "
             "Apple AP1 is sliceable, "
             "Knife K1 is pickupable, "
             "Mug M1 is pickupable, "
-            "Mug M1 is cleanable, "
-            "SoapBottle SOAP1 is pickupable, "
-            "Book B1 is pickupable, "
 
             # Agent starts empty-handed
             "Agent A is holding nothing"
@@ -644,8 +668,6 @@ The state is represented by facts about:
 
         goal_state = (
             "Apple AP1 is sliced, "
-            "Apple AP1 is clean, "
-            "Apple AP1 is cool, "
             "Apple AP1 is in DiningTable DT1"
         )
 
@@ -656,35 +678,22 @@ The state is represented by facts about:
             "Slice object Apple AP1 at location Kitchen using tool K1",
             "Put object Knife K1 into receptacle CounterTop CT1 at location Kitchen",
             "Pick up object Apple AP1 from receptacle CounterTop CT1 at location Kitchen",
-            "Clean object Apple AP1 using receptacle SinkBasin SB1 at location Kitchen",
-            "Cool object Apple AP1 using receptacle Fridge F1 at location Kitchen",
             "Put object Apple AP1 into receptacle DiningTable DT1 at location Kitchen"
         ]
 
         random_trajectory1 = [
-            "Look at location LivingRoom",
-            "Examine receptacle CoffeeTable COF1",
             "Pick up object Mug M1 from receptacle CoffeeTable COF1 at location LivingRoom",
             "Go from location LivingRoom to location Kitchen",
-            "Clean object Mug M1 using receptacle SinkBasin SB1 at location Kitchen"
+            "Put object Mug M1 into receptacle DiningTable DT1 at location Kitchen"
         ]
 
         random_trajectory2 = [
             "Go from location LivingRoom to location Kitchen",
-            "Pick up object Knife K1 from receptacle Drawer D1 at location Kitchen",
-            "Slice object Apple AP1 at location Kitchen using tool K1"
-        ]
-
-        random_trajectory3 = [
-            "Go from location LivingRoom to location Bathroom",
-            "Open receptacle Cabinet C2 at location Bathroom",
-            "Pick up object SoapBottle SOAP1 from receptacle Cabinet C2 at location Bathroom",
-            "Go from location Bathroom to location Kitchen",
-            "Cool object SoapBottle SOAP1 using receptacle Fridge F1 at location Kitchen"
+            "Pick up object Apple AP1 from receptacle CounterTop CT1 at location Kitchen",
+            "Put object Apple AP1 into receptacle DiningTable DT1 at location Kitchen"
         ]
 
         return initial_state, goal_state, solution, [
             random_trajectory1,
             random_trajectory2,
-            random_trajectory3,
         ]
