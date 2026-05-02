@@ -6,14 +6,15 @@ from typing import Any, Callable, Dict, List
 from src.eval.common_types import ParsedTextCheckpoint
 
 
-# Matches ACTION: (with optional surrounding markdown bold **)
+# Matches ACTION: / STATE N: with optional markdown bold ** and optional leading - bullet
+_SEP = r"\n[ \t]*[-*]*[ \t]*\*{0,2}(?:STATE\s+[0-9]+(?:\.[0-9]+)?\s*:|ACTION:|Plan summary:)"
 ACTION_PATTERN = re.compile(
-    r"\*{0,2}ACTION:\*{0,2}\s*(.*?)(?=\n[ \t]*\*{0,2}(?:STATE\s+[0-9]+(?:\.[0-9]+)?\s*:|ACTION:|Plan summary:)|\Z)",
+    r"\*{0,2}ACTION:\*{0,2}\s*(.*?)(?=" + _SEP + r"|\Z)",
     re.DOTALL,
 )
 
 STATE_PATTERN = re.compile(
-    r"\*{0,2}STATE\s+([0-9]+(?:\.[0-9]+)?)\s*:\*{0,2}\s*(.*?)(?=\n[ \t]*\*{0,2}(?:STATE\s+[0-9]+(?:\.[0-9]+)?\s*:|ACTION:|Plan summary:)|\Z)",
+    r"\*{0,2}STATE\s+([0-9]+(?:\.[0-9]+)?)\s*:\*{0,2}\s*(.*?)(?=" + _SEP + r"|\Z)",
     re.DOTALL,
 )
 

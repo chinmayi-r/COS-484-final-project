@@ -277,7 +277,7 @@ def parse_action_text(action_text: str) -> ParsedAction:
         load-airplane P1 A0 L2-0
         unload-airplane P1 A0 L0-0
     """
-    text = action_text.strip()
+    text = action_text.strip().rstrip(".,;!?")
 
     m = DRIVE_TRUCK_PATTERN.fullmatch(text)
     if m:

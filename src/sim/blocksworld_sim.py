@@ -134,7 +134,7 @@ def parse_action_text(action_text: str) -> ParsedAction:
     """
     Parse Blocksworld actions.
     """
-    text = action_text.strip()
+    text = action_text.strip().rstrip(".,;!?")
 
     m = MOVE_PATTERN.fullmatch(text)
     if m:
