@@ -1,6 +1,6 @@
 """LLM client implementations for different providers."""
 from abc import ABC, abstractmethod
-from typing import Optional
+from typing import Optional, List, Dict
 from openai import OpenAI, AzureOpenAI
 from src.utils.config import Config
 
@@ -12,6 +12,22 @@ class LLMClient(ABC):
     def generate(self, prompt: str, temperature: float = 0.0, max_tokens: int = 1000) -> str:
         """Generate a completion for the provided prompt."""
         pass
+
+    def generate_messages(self, messages: List[Dict[str, str]],
+                          temperature: float = 0.0, max_tokens: int = 3000) -> str:
+        """Generate a completion from a full messages list (system/user/assistant turns).
+        Default implementation formats messages into a single prompt string."""
+        prompt = ""
+        for m in messages:
+            role = m["role"]
+            content = m["content"]
+            if role == "system":
+                prompt += content + "\n\n"
+            elif role == "user":
+                prompt += f"User:\n{content}\n\n"
+            elif role == "assistant":
+                prompt += f"Assistant:\n{content}\n\n"
+        return self.generate(prompt, temperature, max_tokens)
 
 
 SYSTEM_PROMPT = (
@@ -38,13 +54,17 @@ class AzureOpenAIClient(LLMClient):
         )
 
     def generate(self, prompt: str, temperature: float = 0.0, max_tokens: int = 1000) -> str:
+        return self.generate_messages(
+            [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": prompt}],
+            temperature, max_tokens,
+        )
+
+    def generate_messages(self, messages: List[Dict[str, str]],
+                          temperature: float = 0.0, max_tokens: int = 3000) -> str:
         try:
             response = self.client.chat.completions.create(
                 model=self.deployment_name,
-                messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": prompt},
-                ],
+                messages=messages,
                 temperature=temperature,
                 max_tokens=max_tokens,
             )
@@ -63,13 +83,17 @@ class OpenAIClient(LLMClient):
         self.last_usage: Optional[dict] = None
 
     def generate(self, prompt: str, temperature: float = 0.0, max_tokens: int = 1000) -> str:
+        return self.generate_messages(
+            [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": prompt}],
+            temperature, max_tokens,
+        )
+
+    def generate_messages(self, messages: List[Dict[str, str]],
+                          temperature: float = 0.0, max_tokens: int = 3000) -> str:
         try:
             response = self.client.chat.completions.create(
                 model=self.model,
-                messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": prompt},
-                ],
+                messages=messages,
                 temperature=temperature,
                 max_tokens=max_tokens,
             )
@@ -96,13 +120,17 @@ class SandboxClient(LLMClient):
         self.last_usage: Optional[dict] = None
 
     def generate(self, prompt: str, temperature: float = 0.0, max_tokens: int = 1000) -> str:
+        return self.generate_messages(
+            [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": prompt}],
+            temperature, max_tokens,
+        )
+
+    def generate_messages(self, messages: List[Dict[str, str]],
+                          temperature: float = 0.0, max_tokens: int = 3000) -> str:
         try:
             response = self.client.chat.completions.create(
                 model=self.model,
-                messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user",   "content": prompt},
-                ],
+                messages=messages,
                 temperature=temperature,
                 max_tokens=max_tokens,
             )
