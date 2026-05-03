@@ -25,6 +25,8 @@ from typing import Any, Dict, List, Optional, Tuple
 sys.path.insert(0, os.path.dirname(__file__))
 
 from src.aot_plus.core import AoTPlus
+from src.aot_plus.blocksworld_examples import get_blocksworld_json_examples
+from src.aot_plus.logistics_examples import get_logistics_json_examples
 from src.domains.blocksworld import BlocksWorldDomain
 from src.domains.logistics import LogisticsDomain
 from src.sim.blocksworld_sim import (
@@ -377,16 +379,17 @@ def verify_logistics(
 # ---------------------------------------------------------------------------
 
 def make_aot_plus_solver(domain: str, provider: str) -> AoTPlus:
-    """Build an AoT+ solver with the standard few-shot example for the domain."""
+    """Build an AoT+ solver using the hand-crafted JSON few-shot examples."""
     if domain == "blocksworld":
         domain_desc = BlocksWorldDomain.get_domain_description()
-        init_ex, goal_ex, sol_ex, rand_ex = BlocksWorldDomain.generate_example_problem()
+        examples = get_blocksworld_json_examples()
     else:
         domain_desc = LogisticsDomain.get_domain_description()
-        init_ex, goal_ex, sol_ex, rand_ex = LogisticsDomain.generate_example_problem()
+        examples = get_logistics_json_examples()
 
-    solver = AoTPlus(domain_desc, provider)
-    solver.add_example(init_ex, goal_ex, sol_ex, rand_ex)
+    solver = AoTPlus(domain_desc, provider, use_json_state=True)
+    for ex in examples:
+        solver.add_formatted_example(ex)
     return solver
 
 
@@ -421,7 +424,16 @@ def evaluate_domain(
         success = False
 
         try:
-            raw = solver.solve(init_nl, goal_nl, temperature=0.0, max_tokens=max_tokens)
+            # Convert NL states to JSON for the JSON-mode prompt.
+            # Validation still uses NL (goal satisfaction checks are NL-based).
+            if domain == "blocksworld":
+                init_json = json.dumps(bw_nl_to_canonical(init_nl), sort_keys=True)
+                goal_json = json.dumps(bw_nl_to_canonical(goal_nl), sort_keys=True)
+            else:
+                init_json = json.dumps(log_nl_to_canonical(init_nl), sort_keys=True)
+                goal_json = json.dumps(log_nl_to_canonical(goal_nl), sort_keys=True)
+
+            raw = solver.solve(init_json, goal_json, temperature=0.0, max_tokens=max_tokens)
 
             if domain == "blocksworld":
                 success, n_actions, error_msg = verify_blocksworld(init_nl, goal_nl, raw)
