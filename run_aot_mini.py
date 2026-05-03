@@ -433,7 +433,22 @@ def evaluate_domain(
                 init_json = json.dumps(log_nl_to_canonical(init_nl), sort_keys=True)
                 goal_json = json.dumps(log_nl_to_canonical(goal_nl), sort_keys=True)
 
-            raw = solver.solve(init_json, goal_json, temperature=0.0, max_tokens=max_tokens)
+            if domain == "logistics":
+                cm = city_map or LOGISTICS_CITY_MAP
+                city_map_lines = "\n".join(
+                    f"  {loc} → {c}" for loc, c in sorted(cm.items())
+                )
+                extra = (
+                    "IMPORTANT — City map (trucks may ONLY drive within one city; "
+                    "cross-city travel requires loading onto an airplane at an airport):\n"
+                    + city_map_lines
+                    + "\nLocations ending in '-0' are airports. "
+                    "Airplanes fly between airports only."
+                )
+                raw = solver.solve(init_json, goal_json, temperature=0.0,
+                                   max_tokens=max_tokens, extra_context=extra)
+            else:
+                raw = solver.solve(init_json, goal_json, temperature=0.0, max_tokens=max_tokens)
 
             if domain == "blocksworld":
                 success, n_actions, error_msg = verify_blocksworld(init_nl, goal_nl, raw)

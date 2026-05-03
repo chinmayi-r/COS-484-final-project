@@ -127,13 +127,15 @@ class AoTPlusPromptBuilder:
             
         return result
     
-    def build_prompt(self, initial_state: str, goal_state: str) -> str:
+    def build_prompt(self, initial_state: str, goal_state: str,
+                    extra_context: str = "") -> str:
         """Build the complete AoT+ prompt for the given problem.
 
         initial_state / goal_state are JSON strings in JSON mode, natural language otherwise.
+        extra_context is injected into the problem section (e.g. city maps for logistics).
         """
         if self.use_json_state:
-            return self._build_json_prompt(initial_state, goal_state)
+            return self._build_json_prompt(initial_state, goal_state, extra_context)
         return self._build_text_prompt(initial_state, goal_state)
 
     def _build_text_prompt(self, initial_state: str, goal_state: str) -> str:
@@ -177,7 +179,8 @@ Start your solution:
 """
         return prompt
 
-    def _build_json_prompt(self, initial_state_json: str, goal_state_json: str) -> str:
+    def _build_json_prompt(self, initial_state_json: str, goal_state_json: str,
+                           extra_context: str = "") -> str:
         prompt = f"""# Algorithm of Thoughts Plus (AoT+) Planning System — JSON State Mode
 
 ## Domain Description:
@@ -199,12 +202,15 @@ state into the goal state.
 5. Explore different paths if needed; if you backtrack, still output ACTION + STATE_JSON
    for each move (including the undo moves)
 6. End with a "Plan summary:" section listing only the final successful actions
+7. Before moving a block, verify it appears in the "clear" array of the current STATE_JSON.
+   A block is NOT clear (and cannot be moved) if another block is stacked on top of it.
 
 ## Examples:
 """
         prompt += self._formatted_examples_block
+        extra_section = f"\n{extra_context}\n" if extra_context else ""
         prompt += f"""## Problem to Solve:
-
+{extra_section}
 Initial state (JSON):
 {initial_state_json}
 
@@ -245,20 +251,22 @@ class AoTPlus:
             initial_state, goal_state, solution_trajectory, random_trajectories
         )
         
-    def solve(self, initial_state: str, goal_state: str, 
-              temperature: float = 0.0, max_tokens: int = 3000) -> str:
+    def solve(self, initial_state: str, goal_state: str,
+              temperature: float = 0.0, max_tokens: int = 3000,
+              extra_context: str = "") -> str:
         """Solve a planning problem using AoT+.
-        
+
         Args:
             initial_state: Description of the initial state
             goal_state: Description of the goal state
             temperature: Sampling temperature for the LLM
             max_tokens: Maximum number of tokens to generate
-            
+            extra_context: Optional extra text injected into the problem section
+
         Returns:
             The generated solution plan
         """
-        prompt = self.prompt_builder.build_prompt(initial_state, goal_state)
+        prompt = self.prompt_builder.build_prompt(initial_state, goal_state, extra_context)
         return self.llm_client.generate(prompt, temperature, max_tokens)
     
     def extract_plan(self, solution_text: str) -> List[str]:
