@@ -41,8 +41,39 @@ from src.sim.logistics_sim import (
     rollout_actions as log_rollout,
     validate_city_map,
 )
-from src.eval.common_aot_utils import extract_actions
+from src.eval.common_aot_utils import extract_actions  # used as fallback in extract_plan_summary
 from src.utils.config import Config
+
+
+# ---------------------------------------------------------------------------
+# Plan extraction — only from the committed "Plan summary:" section
+# ---------------------------------------------------------------------------
+
+_PLAN_SUMMARY_RE = re.compile(
+    r"Plan\s+summary\s*:?\s*\n(.*?)(?:\Z)",
+    re.IGNORECASE | re.DOTALL,
+)
+_NUMBERED_ACTION_RE = re.compile(r"^\s*\d+\.\s+(.+)", re.MULTILINE)
+
+
+def extract_plan_summary(raw_output: str) -> List[str]:
+    """Extract actions from the numbered 'Plan summary:' list at the end of the response.
+
+    Falls back to ACTION: lines only if no Plan summary section exists, so
+    partial responses still produce something instead of silently failing.
+    """
+    m = _PLAN_SUMMARY_RE.search(raw_output)
+    if m:
+        section = m.group(1)
+        actions = []
+        for line_m in _NUMBERED_ACTION_RE.finditer(section):
+            text = line_m.group(1).strip().rstrip(".,;")
+            if text:
+                actions.append(text)
+        if actions:
+            return actions
+    # fallback: if no Plan summary section, use all ACTION: lines (least-bad option)
+    return extract_actions(raw_output)
 
 
 # ---------------------------------------------------------------------------
@@ -317,7 +348,7 @@ def verify_blocksworld(initial_nl: str, goal_nl: str, raw_output: str) -> Tuple[
     except Exception as e:
         return False, 0, f"Failed to parse initial state: {e}"
 
-    raw_actions = extract_actions(raw_output)
+    raw_actions = extract_plan_summary(raw_output)
     if not raw_actions:
         return False, 0, "No actions extracted"
 
@@ -353,7 +384,7 @@ def verify_logistics(
         return False, 0, f"Failed to parse initial state: {e}"
 
     meta = validate_city_map(city_map)
-    raw_actions = extract_actions(raw_output)
+    raw_actions = extract_plan_summary(raw_output)
     if not raw_actions:
         return False, 0, "No actions extracted"
 
