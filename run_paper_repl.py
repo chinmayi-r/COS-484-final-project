@@ -507,8 +507,9 @@ def main() -> None:
         "openai":       Config.OPENAI_MODEL_NAME or "gpt-4o-mini",
         "sandbox":      Config.SANDBOX_MODEL_NAME or "gpt-4o-mini",
         "azure_openai": Config.AZURE_OPENAI_DEPLOYMENT_NAME or "unknown",
+        "anthropic":    Config.ANTHROPIC_MODEL_NAME or "claude-sonnet-4-6",
     }
-    model_name = model_map[args.provider]
+    model_name = model_map.get(args.provider, args.provider)
 
     use_planbench = not args.no_planbench
     bw_probs   = BLOCKSWORLD_PROBLEMS[:args.n_bw]

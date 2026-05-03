@@ -149,10 +149,43 @@ class AnthropicClient(LLMClient):
     """Client for Anthropic Claude API."""
 
     def __init__(self):
+        import anthropic as _anthropic
         self.model = Config.ANTHROPIC_MODEL_NAME
+        self.client = _anthropic.Anthropic(api_key=Config.ANTHROPIC_API_KEY)
+        self.last_usage: Dict = {}
 
     def generate(self, prompt: str, temperature: float = 0.0, max_tokens: int = 1000) -> str:
-        return "Anthropic client not implemented yet."
+        return self.generate_messages(
+            [{"role": "user", "content": prompt}],
+            temperature, max_tokens,
+        )
+
+    def generate_messages(self, messages: List[Dict[str, str]],
+                          temperature: float = 0.0, max_tokens: int = 3000) -> str:
+        # Anthropic API separates system prompt from the messages list
+        system_content = None
+        api_messages = []
+        for m in messages:
+            if m["role"] == "system":
+                system_content = m["content"]
+            else:
+                api_messages.append({"role": m["role"], "content": m["content"]})
+
+        kwargs = dict(
+            model=self.model,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            messages=api_messages,
+        )
+        if system_content:
+            kwargs["system"] = system_content
+
+        response = self.client.messages.create(**kwargs)
+        self.last_usage = {
+            "input_tokens": response.usage.input_tokens,
+            "output_tokens": response.usage.output_tokens,
+        }
+        return response.content[0].text
 
 
 class GoogleClient(LLMClient):
