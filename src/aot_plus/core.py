@@ -88,7 +88,6 @@ class AoTPlusPromptBuilder:
         success_branch_index = len(random_paths) + 1
         current_state = initial_state
         current_state_id = None
-        plan_steps = []
 
         result += "Try another candidate path from the initial state.\n"
 
@@ -105,14 +104,9 @@ class AoTPlusPromptBuilder:
 
             result += self._format_state_memoization(state_id, current_state)
 
-            plan_steps.append(action)
             current_state_id = state_id
 
-        result += f"\nFinal check: {goal_state} has been achieved.\n\n"
-
-        result += "Plan summary:\n"
-        for i, step in enumerate(plan_steps):
-            result += f"{i + 1}. {step}\n"
+        result += f"\nFinal check: {goal_state} has been achieved.\n"
 
         return result
     
@@ -147,7 +141,6 @@ Use the Algorithm of Thoughts Plus approach to solve this planning problem.
 10. STATE 1.1 means the first continuation after STATE 1
 11. STATE 1.2 means the second continuation after STATE 1
 12. When backtracking, explicitly return to a previous STATE or to the initial state
-14. Conclude with a "Plan summary:" section that lists only the final successful actions
 
 ## Examples:
 """
@@ -161,9 +154,11 @@ Goal state: {goal_state}
 
 Solve this step by step, tracking the state after each action. Remember to:
 1. Prefix each action with "ACTION:"
-2. Update the state after each action using path-based STATE notation
-3. Backtracking should return to a previous STATE or to the initial state
-** 4. YOU MUST END with a "Plan summary:" section containing only the final successful actions
+2. Each ACTION should use object/receptacle IDs only, not type names. 
+For example, write “Pick up object AP1 from receptacle CT1,” not “Pick 
+up object Apple AP1 from receptacle CounterTop CT1.”
+3. Update the state after each action using path-based STATE notation
+4. Backtracking should return to a previous STATE or to the initial state
 
 Start your solution:
 """

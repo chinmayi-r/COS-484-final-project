@@ -223,7 +223,14 @@ class ALFWorldState:
             return False
         if self.at_location.get(agent) != location:
             return False
-        if self.object_at_location.get(cuttable_object) != location:
+        # Cuttable object may be tracked as on the floor (`objectAtLocation`) or only
+        # as inside a receptacle at this location (`inReceptacle` + receptacle placement).
+        on_floor = self.object_at_location.get(cuttable_object) == location
+        in_rec_at_loc = False
+        rec = self.in_receptacle.get(cuttable_object)
+        if rec is not None and self.receptacle_at_location.get(rec) == location:
+            in_rec_at_loc = True
+        if not (on_floor or in_rec_at_loc):
             return False
         if self.holds.get(agent) != knife_object:
             return False
@@ -600,7 +607,8 @@ The state is represented by facts about:
         }
 
         for word, target_set in capability_map.items():
-            pattern = r"[A-Za-z]+ ([A-Za-z0-9_]+) is " + word
+            # Use a trailing word boundary so tokens like `coolable` do not match `cool`.
+            pattern = r"[A-Za-z]+ ([A-Za-z0-9_]+) is " + re.escape(word) + r"\b"
             for match in re.finditer(pattern, description):
                 target_set.add(match.group(1))
 
@@ -616,12 +624,16 @@ The state is represented by facts about:
                     capability_map[prop].add(obj)
 
         # Holding:
-        # "Agent A is holding Mug U"
-        for match in re.finditer(r"Agent ([A-Za-z0-9_]+) is holding [A-Za-z]+ ([A-Za-z0-9_]+)", description):
+        # "Agent A is holding Mug U" / "Agent A is holding Knife K1"
+        for match in re.finditer(
+            r"Agent ([A-Za-z0-9_]+) is holding ([A-Za-z]+) ([A-Za-z0-9_]+)", description
+        ):
             agent = match.group(1)
-            obj = match.group(2)
+            obj_type_name = match.group(2)
+            obj = match.group(3)
             state.holds[agent] = obj
             state.holds_any.add(agent)
+            state.object_type[obj] = obj_type_name
 
         # Default compatibility constraints needed for example planning.
         # These mirror the canContain predicate role in the PDDL.
@@ -673,24 +685,24 @@ The state is represented by facts about:
 
         solution = [
             "Go from location LivingRoom to location Kitchen",
-            "Open receptacle Drawer D1 at location Kitchen",
-            "Pick up object Knife K1 from receptacle Drawer D1 at location Kitchen",
-            "Slice object Apple AP1 at location Kitchen using tool K1",
-            "Put object Knife K1 into receptacle CounterTop CT1 at location Kitchen",
-            "Pick up object Apple AP1 from receptacle CounterTop CT1 at location Kitchen",
-            "Put object Apple AP1 into receptacle DiningTable DT1 at location Kitchen"
+            "Open receptacle D1 at location Kitchen",
+            "Pick up object K1 from receptacle D1 at location Kitchen",
+            "Slice object AP1 at location Kitchen using tool K1",
+            "Put object K1 into receptacle CT1 at location Kitchen",
+            "Pick up object AP1 from receptacle CT1 at location Kitchen",
+            "Put object AP1 into receptacle DT1 at location Kitchen"
         ]
 
         random_trajectory1 = [
-            "Pick up object Mug M1 from receptacle CoffeeTable COF1 at location LivingRoom",
+            "Pick up object M1 from receptacle COF1 at location LivingRoom",
             "Go from location LivingRoom to location Kitchen",
-            "Put object Mug M1 into receptacle DiningTable DT1 at location Kitchen"
+            "Put object M1 into receptacle DT1 at location Kitchen"
         ]
 
         random_trajectory2 = [
             "Go from location LivingRoom to location Kitchen",
-            "Pick up object Apple AP1 from receptacle CounterTop CT1 at location Kitchen",
-            "Put object Apple AP1 into receptacle DiningTable DT1 at location Kitchen"
+            "Pick up object AP1 from receptacle CT1 at location Kitchen",
+            "Put object AP1 into receptacle DT1 at location Kitchen"
         ]
 
         return initial_state, goal_state, solution, [
