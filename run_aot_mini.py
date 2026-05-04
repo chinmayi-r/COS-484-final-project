@@ -72,46 +72,35 @@ def _nl_to_4op_state(nl: str) -> Dict[str, Any]:
 
 
 def _parse_4op_action(text: str) -> Tuple[str, List[str]]:
-    """Parse a NL or PDDL 4-op action string.
+    """Parse a 4-op action string.
 
-    NL forms (matching paper Appendix B.3):
-      "Pick-up X"         → pick-up, [X]
-      "Put-down X"        → put-down, [X]
-      "Unstack X from Y"  → unstack, [X, Y]
-      "Stack X on Y"      → stack,   [X, Y]
-
-    PDDL form (fallback): "(unstack X Y)" → unstack, [X, Y]
+    Accepted forms:
+      (pick-up X)           (put-down X)
+      (unstack X from Y)    (stack X onto Y)
+      (unstack X Y)         (stack X Y)       ← bare PDDL fallback
+      pick-up X             unstack X from Y  ← no-paren fallback
     """
     text = text.strip().rstrip(".")
 
-    # PDDL parenthesized form
-    m = re.match(r"^\(\s*([a-zA-Z\-]+)((?:\s+\S+)*)\s*\)$", text)
-    if m:
-        op = m.group(1).lower()
-        args = [a.upper() for a in m.group(2).split() if a]
-        return op, args
+    # Strip optional parens
+    inner = text
+    if inner.startswith("(") and inner.endswith(")"):
+        inner = inner[1:-1].strip()
 
-    # NL forms — case-insensitive
-    tl = text.lower()
-    if tl.startswith("pick-up ") or tl.startswith("pick up "):
-        X = text.split(None, 1)[1].strip().upper()
-        return "pick-up", [X]
-    if tl.startswith("put-down ") or tl.startswith("put down "):
-        X = text.split(None, 1)[1].strip().upper()
-        return "put-down", [X]
-    m = re.match(r"unstack\s+(\w+)\s+from\s+(\w+)", text, re.IGNORECASE)
+    tl = inner.lower()
+
+    if tl.startswith("pick-up "):
+        return "pick-up", [inner.split(None, 1)[1].strip().upper()]
+    if tl.startswith("put-down "):
+        return "put-down", [inner.split(None, 1)[1].strip().upper()]
+
+    m = re.match(r"unstack\s+(\w+)\s+(?:from\s+)?(\w+)", inner, re.IGNORECASE)
     if m:
         return "unstack", [m.group(1).upper(), m.group(2).upper()]
-    m = re.match(r"stack\s+(\w+)\s+on(?:to)?\s+(\w+)", text, re.IGNORECASE)
+
+    m = re.match(r"stack\s+(\w+)\s+(?:on(?:to)?\s+)?(\w+)", inner, re.IGNORECASE)
     if m:
         return "stack", [m.group(1).upper(), m.group(2).upper()]
-
-    # Bare PDDL without parens: "unstack B A"
-    parts = text.split()
-    if parts:
-        op = parts[0].lower()
-        if op in ("pick-up", "put-down", "unstack", "stack"):
-            return op, [a.upper() for a in parts[1:]]
 
     raise ValueError(f"Cannot parse action: {text!r}")
 
