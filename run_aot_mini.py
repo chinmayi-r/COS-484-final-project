@@ -512,119 +512,113 @@ def _compute_error_taxonomy_bw(
     goal_nl: str,
 ) -> Dict[str, Any]:
     """
-    Compute error taxonomy by comparing STATE_JSON checkpoints in raw_output
-    with 4-op simulator ground truth.
+    Compare the model's final STATE_JSON against 4-op simulator ground truth.
 
-    Returns dict:
-      n_checkpoints     : number of STATE_JSON blocks found in body (before plan summary)
-      n_parse_failures  : checkpoints where JSON couldn't be parsed
-      first_error_step  : 1-indexed checkpoint index of first state mismatch (or None)
-      error_counts      : {"omission": N, "hallucination": N, "accumulation": N}
-      errors            : list of per-checkpoint error dicts for detailed logging
+    Approach:
+      1. Extract the committed plan from "Plan summary:"
+      2. Simulate it to get the ground truth state (stops at first illegal action)
+      3. Extract the last STATE_JSON block from the body
+      4. Diff model state vs ground truth, classify each wrong predicate:
+           omission    — predicate should have changed from initial but model left it unchanged
+           hallucination — predicate should have stayed same as initial but model changed it
+           wrong_value — both sim and model differ from initial, but to different values
+      5. Propagation flag: the first illegal action references a block with a state error
+
+    Returns:
+      n_state_blocks    : number of STATE_JSON blocks found in body
+      state_parseable   : whether the final STATE_JSON parsed successfully
+      first_illegal_step: 0-indexed step of first illegal plan action (None if all legal)
+      error_counts      : {"omission": N, "hallucination": N, "wrong_value": N}
+      propagation       : True if first illegal action involves a block with a state error
+      block_errors      : {block: error_type} for each wrong predicate
     """
-    # Strip plan summary from body to avoid double-counting actions
-    body = raw_output.split("Plan summary:")[0] if "Plan summary:" in raw_output else raw_output
+    empty = {
+        "n_state_blocks": 0, "state_parseable": False,
+        "first_illegal_step": None,
+        "error_counts": {"omission": 0, "hallucination": 0, "wrong_value": 0},
+        "propagation": False, "block_errors": {},
+    }
 
-    segments = _SEGMENT_RE.findall(body)
-    if not segments:
-        return {"n_checkpoints": 0, "n_parse_failures": 0,
-                "first_error_step": None,
-                "error_counts": {"omission": 0, "hallucination": 0, "accumulation": 0},
-                "errors": []}
+    # Parse initial state
+    try:
+        initial = _nl_to_4op_state(initial_nl)
+    except Exception:
+        return empty
+
+    # Simulate the committed plan to get ground truth final state
+    plan_raw = extract_plan_summary(raw_output)
+    parsed_plan = []
+    for a in plan_raw:
+        try:
+            parsed_plan.append(_parse_4op_action(a))
+        except ValueError:
+            pass
+    sim_states, bad_idx, _ = _rollout_4op(initial, parsed_plan)
+    sim_final = sim_states[-1]  # last valid state (may be mid-plan if illegal action occurred)
+
+    # Extract the last STATE_JSON from the body (before Plan summary)
+    body = raw_output.split("Plan summary:")[0] if "Plan summary:" in raw_output else raw_output
+    state_blocks = _STATE_JSON_RE.findall(body)
+    n_state_blocks = len(state_blocks)
+
+    if not state_blocks:
+        return {**empty, "first_illegal_step": bad_idx}
 
     try:
-        sim_state = _nl_to_4op_state(initial_nl)
-    except Exception:
-        return {"n_checkpoints": len(segments), "n_parse_failures": len(segments),
-                "first_error_step": None,
-                "error_counts": {"omission": 0, "hallucination": 0, "accumulation": 0},
-                "errors": []}
+        model_final = json.loads(state_blocks[-1].strip())
+    except json.JSONDecodeError:
+        return {**empty, "n_state_blocks": n_state_blocks,
+                "first_illegal_step": bad_idx}
 
-    errors = []
-    n_parse_failures = 0
-    first_error_step = None
-    omission_total = hallucination_total = 0
-    wrong_on_history: Dict[str, List[str]] = {}  # block → list of wrong values
+    # Diff model["on"] vs sim_final["on"] using initial["on"] as baseline
+    model_on = model_final.get("on", {})
+    sim_on   = sim_final.get("on", {})
+    init_on  = initial.get("on", {})
 
-    for ckpt_idx, (actions_block, state_json_str) in enumerate(segments, start=1):
-        # Parse model's STATE_JSON
-        try:
-            model_state = json.loads(state_json_str.strip())
-        except json.JSONDecodeError:
-            n_parse_failures += 1
-            errors.append({"checkpoint": ckpt_idx, "parse_error": True})
-            continue
+    block_errors: Dict[str, str] = {}
+    omission = hallucination = wrong_value = 0
 
-        # Simulate the actions in this segment
-        action_texts = _ACTION_LINE_RE.findall(actions_block)
-        parsed_actions = []
-        for at in action_texts:
-            try:
-                parsed_actions.append(_parse_4op_action(at))
-            except ValueError:
-                pass  # skip unparseable lines
+    for block in set(list(sim_on.keys()) + list(model_on.keys())):
+        sim_val  = sim_on.get(block)
+        mod_val  = model_on.get(block)
+        init_val = init_on.get(block)
 
-        for op, args in parsed_actions:
-            try:
-                sim_state = _apply_4op(sim_state, op, args)
-            except ValueError:
-                pass  # illegal action — sim state stays; we still diff
+        if sim_val == mod_val:
+            continue  # correct
 
-        # Diff model vs simulator on the "on" mapping
-        model_on = model_state.get("on", {})
-        sim_on = sim_state.get("on", {})
-        ckpt_errors: Dict[str, str] = {}  # block → error_type
+        if mod_val == init_val:
+            # Should have changed from initial, but model left it at initial value
+            block_errors[block] = "omission"
+            omission += 1
+        elif sim_val == init_val:
+            # Should have stayed at initial value, but model changed it
+            block_errors[block] = "hallucination"
+            hallucination += 1
+        else:
+            # Both sim and model differ from initial, but disagree on the new value
+            block_errors[block] = "wrong_value"
+            wrong_value += 1
 
-        for block in set(list(sim_on.keys()) + list(model_on.keys())):
-            sim_val = sim_on.get(block)
-            mod_val = model_on.get(block)
-            if sim_val == mod_val:
-                wrong_on_history.pop(block, None)
-                continue
-
-            # Determine error type
-            if mod_val == sim_state.get("on", {}).get(block):
-                # Model didn't change when it should have → omission
-                ckpt_errors[block] = "omission"
-                omission_total += 1
-            elif sim_val == (sim_state.get("on", {}) if ckpt_idx > 1 else {}).get(block):
-                # Model changed when it shouldn't have → hallucination
-                ckpt_errors[block] = "hallucination"
-                hallucination_total += 1
-            else:
-                ckpt_errors[block] = "omission"
-                omission_total += 1
-
-            # Track accumulation (same wrong value in 3+ consecutive checkpoints)
-            history = wrong_on_history.setdefault(block, [])
-            history.append(mod_val)
-
-        if ckpt_errors and first_error_step is None:
-            first_error_step = ckpt_idx
-
-        errors.append({
-            "checkpoint": ckpt_idx,
-            "parse_error": False,
-            "block_errors": ckpt_errors,
-            "n_actions_in_segment": len(action_texts),
-        })
-
-    # Count accumulation: blocks with 3+ consecutive wrong values
-    accumulation_total = sum(
-        1 for hist in wrong_on_history.values() if len(hist) >= 3
-    )
+    # Propagation: first illegal action references a block with a state error
+    propagation = False
+    if bad_idx is not None and bad_idx < len(parsed_plan):
+        _, bad_args = parsed_plan[bad_idx]
+        if any(a in block_errors for a in bad_args):
+            propagation = True
 
     return {
-        "n_checkpoints": len(segments),
-        "n_parse_failures": n_parse_failures,
-        "first_error_step": first_error_step,
+        "n_state_blocks":     n_state_blocks,
+        "state_parseable":    True,
+        "first_illegal_step": bad_idx,
         "error_counts": {
-            "omission": omission_total,
-            "hallucination": hallucination_total,
-            "accumulation": accumulation_total,
+            "omission":      omission,
+            "hallucination": hallucination,
+            "wrong_value":   wrong_value,
         },
-        "errors": errors,
+        "propagation":  propagation,
+        "block_errors": block_errors,
     }
+
 
 
 def _log_goal_satisfied(final_state: Dict[str, Any], goal_nl: str) -> bool:
@@ -843,12 +837,14 @@ def evaluate_domain(
 
         status = "✓" if success else "✗"
         tax_str = ""
-        if taxonomy:
+        if taxonomy and taxonomy.get("state_parseable"):
             ec = taxonomy.get("error_counts", {})
-            tax_str = (f"  [ckpts={taxonomy['n_checkpoints']} "
-                       f"om={ec.get('omission',0)} "
+            prop = "P" if taxonomy.get("propagation") else ""
+            tax_str = (f"  [om={ec.get('omission',0)} "
                        f"hal={ec.get('hallucination',0)} "
-                       f"acc={ec.get('accumulation',0)}]")
+                       f"wv={ec.get('wrong_value',0)}{prop}]")
+        elif taxonomy and taxonomy.get("n_state_blocks", 0) == 0:
+            tax_str = "  [no STATE_JSON]"
         print(f"{status}  actions={n_actions:2d}  {error_msg or ''}{tax_str}")
 
         if verbose and not success:
@@ -869,7 +865,7 @@ def evaluate_domain(
         }
         if taxonomy:
             result_entry["error_taxonomy"] = {
-                k: v for k, v in taxonomy.items() if k != "errors"
+                k: v for k, v in taxonomy.items() if k != "block_errors"
             }
         results.append(result_entry)
 
@@ -891,16 +887,18 @@ def evaluate_domain(
     if domain == "blocksworld":
         all_tax = [r.get("error_taxonomy", {}) for r in results if "error_taxonomy" in r]
         if all_tax:
-            taxonomy_agg = {
-                "total_checkpoints": sum(t.get("n_checkpoints", 0) for t in all_tax),
-                "total_parse_failures": sum(t.get("n_parse_failures", 0) for t in all_tax),
-                "omission": sum(t.get("error_counts", {}).get("omission", 0) for t in all_tax),
-                "hallucination": sum(t.get("error_counts", {}).get("hallucination", 0) for t in all_tax),
-                "accumulation": sum(t.get("error_counts", {}).get("accumulation", 0) for t in all_tax),
-                "problems_with_first_error": sum(
-                    1 for t in all_tax if t.get("first_error_step") is not None
-                ),
-            }
+            parseable = [t for t in all_tax if t.get("state_parseable")]
+        taxonomy_agg = {
+            "n_problems_with_state_json": sum(1 for t in all_tax if t.get("n_state_blocks", 0) > 0),
+            "n_state_parseable":          len(parseable),
+            "omission":      sum(t["error_counts"]["omission"]      for t in parseable),
+            "hallucination": sum(t["error_counts"]["hallucination"]  for t in parseable),
+            "wrong_value":   sum(t["error_counts"]["wrong_value"]    for t in parseable),
+            "propagation":   sum(1 for t in parseable if t.get("propagation")),
+            "n_with_illegal_action": sum(
+                1 for t in all_tax if t.get("first_illegal_step") is not None
+            ),
+        }
 
     summary = {
         "domain":             domain,
@@ -1053,8 +1051,9 @@ def main():
             ta = s["error_taxonomy_agg"]
             print(f"    taxonomy: omission={ta['omission']} "
                   f"hallucination={ta['hallucination']} "
-                  f"accumulation={ta['accumulation']} "
-                  f"problems_with_error={ta['problems_with_first_error']}")
+                  f"wrong_value={ta['wrong_value']} "
+                  f"propagation={ta['propagation']} "
+                  f"(of {ta['n_state_parseable']} parseable STATE_JSON blocks)")
     print(f"{'='*60}\n")
 
     if args.output_dir:
