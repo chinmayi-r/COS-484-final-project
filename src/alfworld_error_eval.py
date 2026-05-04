@@ -791,8 +791,14 @@ def evaluate_dataset(args):
     """Run evaluation over sampled ALFWorld problem files and write outputs."""
     files = glob.glob(os.path.join(args.dataset_root, "**", "game.tw-pddl"), recursive=True)
     random.Random(args.seed).shuffle(files)
+
+    start = max(args.start_index, 0)
+
     if args.max_examples > 0:
-        files = files[:args.max_examples]
+        end = start + args.max_examples
+        files = files[start:end]
+    else:
+        files = files[start:]
 
     llm_client = get_llm_client(args.provider)
     prompt_builder = AoTPlusPromptBuilder(
@@ -980,11 +986,12 @@ def parse_args():
     parser.add_argument("--provider", default=None, help="LLM provider for get_llm_client().")
     parser.add_argument("--max-examples", type=int, default=10)
     parser.add_argument("--temperature", type=float, default=0.0)
-    parser.add_argument("--max-tokens", type=int, default=25000)
+    parser.add_argument("--max-tokens", type=int, default=30000)
     parser.add_argument("--max-init-facts", type=int, default=999)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--use-json-state", action="store_true")
     parser.add_argument("--use-goal-residual", action="store_true")
+    parser.add_argument("--start-index", type=int, default=0)
     return parser.parse_args()
 
 

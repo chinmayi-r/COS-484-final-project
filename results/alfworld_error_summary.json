@@ -1,6 +1,6 @@
 {
-  "episodes": 5,
-  "steps": 35,
+  "episodes": 2,
+  "steps": 15,
   "propagation_errors": 0,
   "accumulation_errors": 0,
   "omission_errors": 0,

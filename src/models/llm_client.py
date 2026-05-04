@@ -16,7 +16,7 @@ class LLMClient(ABC):
         self,
         prompt: str,
         temperature: float = 0.0,
-        max_tokens: int = 25000,
+        max_tokens: int = 30000,
     ) -> str:
         """Generate a completion for the provided prompt."""
         pass
@@ -33,7 +33,7 @@ class AnthropicClient(LLMClient):
         self,
         prompt: str,
         temperature: float = 0.0,
-        max_tokens: int = 25000,
+        max_tokens: int = 30000,
     ) -> str:
         """Generate a completion using Claude with streaming."""
         try:

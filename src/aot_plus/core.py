@@ -274,9 +274,14 @@ Start your solution:
         if self.use_goal_residual:
             residual_rules = """
 7. Every STATE_JSON block must include these two extra fields:
-   - "goal_satisfied": a list of goal conditions already true
-   - "goal_remaining": a list of goal conditions not yet true
-8. Use "goal_remaining" to decide what still needs to be done.
+   - "goal_satisfied": a short natural-language checklist of concrete goal conditions already true
+   - "goal_remaining": a short natural-language checklist of concrete goal conditions not yet true
+8. Do not copy symbolic existential variables like ?o or ?r into goal_satisfied/goal_remaining.
+9. Instantiate the goal with concrete object/receptacle IDs when possible.
+10. Example:
+   "goal_satisfied": ["Apple_1 is cool"]
+   "goal_remaining": ["Apple_1 must be placed in DiningTable_1"]
+11. Use "goal_remaining" to decide what still needs to be done.
 """
         else:
             residual_rules = """
@@ -303,8 +308,8 @@ state into the goal state.
 4. Every single action must be followed by exactly one STATE_JSON block.
 5. Do not skip state updates for any action.
 6. Every STATE_JSON block must be valid parseable JSON. Do not use comments or trailing commas.
-{residual_rules}9. Explore different paths if needed; if you backtrack, still output ACTION + STATE_JSON for each move.
-10. End with a "Plan summary:" section listing only the final successful actions.
+{residual_rules}12. Explore different paths if needed; if you backtrack, still output ACTION + STATE_JSON for each move.
+13. End with a "Plan summary:" section listing only the final successful actions.
 
 ## Examples:
 """
@@ -336,15 +341,26 @@ Start your solution:
         """Return a valid JSON string for the initial STATE_JSON block."""
         try:
             state_dict = json.loads(initial_state_json)
+
             if self.use_goal_residual:
-                state_dict.setdefault("goal_satisfied", [])
-                state_dict.setdefault("goal_remaining", [])
+                # Do NOT preserve stale/bad residual fields from the input JSON.
+                # The model should recompute these after each action.
+                state_dict["goal_satisfied"] = []
+                state_dict["goal_remaining"] = [
+                    "Goal not yet satisfied. Need to make some valid object/receptacle assignment satisfy the goal."
+                ]
+
             return json.dumps(state_dict, indent=2, sort_keys=True)
+
         except json.JSONDecodeError:
             state_dict = {"state_text": initial_state_json}
+
             if self.use_goal_residual:
                 state_dict["goal_satisfied"] = []
-                state_dict["goal_remaining"] = []
+                state_dict["goal_remaining"] = [
+                    "Goal not yet satisfied. Need to make some valid object/receptacle assignment satisfy the goal."
+                ]
+
             return json.dumps(state_dict, indent=2, sort_keys=True)
 
 
