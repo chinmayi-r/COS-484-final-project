@@ -118,6 +118,139 @@ def clean_type(type_name):
     return type_name[:-4] if type_name.endswith("Type") else type_name
 
 
+def clean_alias_base(name: str) -> str:
+    """Readable base string for short-ID aliases.
+
+    Locations encoded as ``loc_bar...`` or ``loc_...`` use the base ``loc``.
+    Type names drop a trailing ``Type`` (e.g. ``AppleType`` -> ``Apple``).
+    """
+    if name.startswith("loc_bar") or name.startswith("loc_"):
+        return "loc"
+    if name.endswith("Type"):
+        return name[:-4]
+    return name
+
+
+def _collect_agents_from_atoms(atoms):
+    agents = set()
+    for atom in atoms:
+        if len(atom) >= 2 and atom[0] == "atLocation":
+            agents.add(atom[1])
+    return agents
+
+
+def _atom_entity_tokens(atoms):
+    """Object/receptacle/location-like args from init atoms (exclude PDDL type args)."""
+    skip_type_args = {
+        ("objectType", 1),
+        ("receptacleType", 1),
+    }
+    tokens = set()
+    for atom in atoms:
+        if not atom:
+            continue
+        pred = atom[0]
+        for j, tok in enumerate(atom[1:]):
+            if not tok or tok.startswith("?"):
+                continue
+            if (pred, j) in skip_type_args:
+                continue
+            if pred == "canContain":
+                continue
+            tokens.add(tok)
+    return tokens
+
+
+def build_alias_maps(objects_by_type, atoms):
+    """Build original<->alias maps using semantic ALFWorld types from init atoms."""
+    original_to_alias = {}
+    alias_to_original = {}
+
+    def register(orig, alias):
+        if orig in original_to_alias:
+            return
+        if alias in alias_to_original and alias_to_original[alias] != orig:
+            raise ValueError(f"Alias collision on {alias!r}")
+        original_to_alias[orig] = alias
+        alias_to_original[alias] = orig
+
+    by_pred = {}
+    for pred, *args in atoms:
+        by_pred.setdefault(pred, []).append(args)
+
+    object_types = {
+        obj: clean_type(obj_type)
+        for obj, obj_type in by_pred.get("objectType", [])
+        if obj and obj_type
+    }
+
+    receptacle_types = {
+        recep: clean_type(recep_type)
+        for recep, recep_type in by_pred.get("receptacleType", [])
+        if recep and recep_type
+    }
+
+    agents = _collect_agents_from_atoms(atoms)
+    for agent in sorted(agents):
+        register(agent, agent)
+
+    counters = {}
+
+    def next_alias(base):
+        counters.setdefault(base, 0)
+        counters[base] += 1
+        return f"{base}_{counters[base]}"
+
+    # Receptacles first, using semantic types like Fridge, DiningTable, Drawer.
+    for recep in sorted(receptacle_types):
+        base = clean_alias_base(receptacle_types[recep])
+        register(recep, next_alias(base))
+
+    # Objects next, using semantic types like Apple, Knife, Bowl when available.
+    for obj in sorted(object_types):
+        base = clean_alias_base(object_types[obj])
+        register(obj, next_alias(base))
+
+    # Locations.
+    entity_tokens = _atom_entity_tokens(atoms)
+    loc_ids = sorted(
+        tok for tok in entity_tokens
+        if tok.startswith("loc_bar") or tok.startswith("loc_")
+    )
+    for loc in loc_ids:
+        register(loc, next_alias("loc"))
+
+    # Fallback for any remaining ids from the :objects block.
+    for typ, objs in sorted(objects_by_type.items()):
+        for obj in sorted(objs):
+            if obj in original_to_alias:
+                continue
+
+            # Keep semantic PDDL type constants readable in goals.
+            # Example: AppleType -> Apple, DiningTableType -> DiningTable.
+            if obj.endswith("Type"):
+                register(obj, clean_alias_base(obj))
+                continue
+
+            base = clean_alias_base(typ)
+            register(obj, next_alias(base))
+
+    return original_to_alias, alias_to_original
+
+
+def replace_ids(text: str, mapping: dict) -> str:
+    """Replace keys in ``text`` with values using longest-match-first order."""
+    if not text or not mapping:
+        return text
+    keys = sorted(mapping.keys(), key=len, reverse=True)
+    pattern = re.compile("|".join(re.escape(k) for k in keys))
+
+    def repl(m):
+        return mapping[m.group(0)]
+
+    return pattern.sub(repl, text)
+
+
 def init_atoms_to_nl(atoms, max_facts):
     """Convert parsed init atoms into a compact natural-language state memo."""
     facts = []
@@ -376,7 +509,21 @@ def evaluate_goal(node, fact_set, objects_by_type, env):
         if isinstance(arg, list) or (arg.startswith("?") and arg not in env):
             return False
         args.append(env[arg] if arg.startswith("?") else arg)
-    return tuple([head] + args) in fact_set
+        
+    fact = tuple([head] + args)
+    if fact in fact_set:
+        return True
+
+    # PDDL goals use AppleType / DiningTableType, but parsed NL states use
+    # Apple / DiningTable. Allow those to match.
+    if head in {"objectType", "receptacleType"} and len(args) == 2:
+        type_arg = args[1]
+        if isinstance(type_arg, str) and type_arg.endswith("Type"):
+            normalized_fact = (head, args[0], clean_type(type_arg))
+            if normalized_fact in fact_set:
+                return True
+
+    return False
 
 
 def evaluate_exists(var_decl, body, fact_set, objects_by_type, env):
@@ -513,8 +660,9 @@ def evaluate_dataset(args):
     prompt_builder = AoTPlusPromptBuilder(
         ALFWorldDomain.get_domain_description(),
         use_json_state=False,
-        state_transition_fn=None,
+        state_transition_fn=ALFWorldState.apply_action,
     )
+    
     prompt_builder.add_example(*ALFWorldDomain.generate_example_problem())
 
     os.makedirs(args.output_dir, exist_ok=True)
@@ -558,25 +706,81 @@ def evaluate_file(path, args, llm_client, prompt_builder, totals):
         return {"file": path, "error": "pddl_sections_missing"}
 
     objects_by_type = parse_typed_objects(objects_block)
-    initial_state_nl = init_atoms_to_nl(parse_init_atoms(init_block), args.max_init_facts)
+    atoms = parse_init_atoms(init_block)
+    initial_state_nl = init_atoms_to_nl(atoms, args.max_init_facts)
     goal_node = parse_sexpr(goal_block)
     goal_state_nl = goal_to_text(goal_node)
 
-    prompt = prompt_builder.build_prompt(initial_state_nl, goal_state_nl)
+    original_to_alias, alias_to_original = build_alias_maps(objects_by_type, atoms)
+    initial_state_for_prompt = replace_ids(initial_state_nl, original_to_alias)
+    goal_state_for_prompt = replace_ids(goal_state_nl, original_to_alias)
+
+    prompt = prompt_builder.build_prompt(initial_state_for_prompt, goal_state_for_prompt)
+    print("\n========== PROMPT ==========")
+    print(prompt)
+    print("========== END PROMPT ==========\n")
     llm_output = llm_client.generate(prompt, args.temperature, args.max_tokens)
-    
+
     print("\n========== RAW MODEL OUTPUT ==========")
     print(llm_output)
     print("========== END RAW MODEL OUTPUT ==========\n")
 
-    actions, states = extract_actions_and_states(llm_output)
+    llm_output_for_eval = replace_ids(llm_output, alias_to_original)
+    actions, states = extract_actions_and_states(llm_output_for_eval)
     per_step, accumulation_facts = episode_diagnostics(actions, states, initial_state_nl)
+    
+    print("\n========== ERROR DETAILS ==========")
+    for step in per_step:
+        print(f"\nStep {step['step']}: {step['action']}")
+
+        if step["propagation_error"]:
+            print("  PROPAGATION ERROR:")
+            print("   First step where model state diverged from true state.")
+            print("   Divergence facts:")
+            for fact in step["divergence_facts"][:20]:
+                print("    ", fact)
+
+        if step["accumulation_error"]:
+            print("  ACCUMULATION ERROR:")
+            print("   A previous divergence persisted into this step.")
+
+        if step["omission_error"]:
+            print("  OMISSION ERROR:")
+            print("   Expected state changes missing from model state:")
+            for fact in step["omission_facts"]:
+                print("    ", fact)
+
+        if step["hallucination_error"]:
+            print("  HALLUCINATION ERROR:")
+            print("   Model state changed facts that true transition did not change:")
+            for fact in step["hallucination_facts"]:
+                print("    ", fact)
+
+    print("\nAccumulation facts that persisted:")
+    for fact in accumulation_facts[:50]:
+        print(" ", fact)
+    print("========== END ERROR DETAILS ==========\n")
+    
     update_totals(totals, per_step)
 
     true_text = initial_state_nl
     for action in actions[: len(per_step)]:
         true_text = ALFWorldState.apply_action(true_text, action)
     final_true_state = ALFWorldDomain.parse_state_description(true_text)
+    
+    final_true_facts = state_to_facts(final_true_state)
+
+    print("\n========== GOAL DEBUG ==========")
+    print("Goal node:", goal_node)
+    print("isCool facts:", sorted(f for f in final_true_facts if f[0] == "isCool"))
+    print("Apple objectType facts:", sorted(f for f in final_true_facts if f[0] == "objectType" and "Apple" in str(f)))
+    print("DiningTable receptacleType facts:", sorted(f for f in final_true_facts if f[0] == "receptacleType" and "DiningTable" in str(f)))
+    print("Apple in DiningTable facts:", sorted(
+        f for f in final_true_facts
+        if f[0] == "inReceptacle" and "Apple" in str(f) and "DiningTable" in str(f)
+    ))
+    print("========== END GOAL DEBUG ==========\n")
+    
     goal_true = evaluate_goal(goal_node, state_to_facts(final_true_state), objects_by_type, {})
 
     final_model_goal = False
@@ -597,6 +801,8 @@ def evaluate_file(path, args, llm_client, prompt_builder, totals):
         "accumulation_facts": accumulation_facts,
         "steps": per_step,
         "raw_output": llm_output,
+        "raw_output_original_ids": llm_output_for_eval,
+        "alias_map": original_to_alias,
     }
 
 
@@ -618,8 +824,8 @@ def parse_args():
     parser.add_argument("--provider", default=None, help="LLM provider for get_llm_client().")
     parser.add_argument("--max-examples", type=int, default=10)
     parser.add_argument("--temperature", type=float, default=0.0)
-    parser.add_argument("--max-tokens", type=int, default=3000)
-    parser.add_argument("--max-init-facts", type=int, default=180)
+    parser.add_argument("--max-tokens", type=int, default=15000)
+    parser.add_argument("--max-init-facts", type=int, default=500)
     parser.add_argument("--seed", type=int, default=42)
     return parser.parse_args()
 

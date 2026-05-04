@@ -24,10 +24,13 @@ if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
 from src.alfworld_error_eval import (
+    build_alias_maps,
+    clean_alias_base,
     extract_actions_and_states,
+    episode_diagnostics,
     parse_state_header,
     prefix_chain,
-    episode_diagnostics,
+    replace_ids,
 )
 
 
@@ -66,6 +69,62 @@ PUT_INIT = (
     "CounterTop CT1 can contain Apple, "
     "Agent A is holding Apple AP1"
 )
+
+
+class TestALFWorldAliasLayer(unittest.TestCase):
+    """Short-ID aliases for ALFWorld PDDL object/location strings."""
+
+    def test_clean_alias_base_locations_and_types(self):
+        self.assertEqual(clean_alias_base("loc_bar__minus_00"), "loc")
+        self.assertEqual(clean_alias_base("loc_other"), "loc")
+        self.assertEqual(clean_alias_base("AppleType"), "Apple")
+        self.assertEqual(clean_alias_base("DiningTableType"), "DiningTable")
+
+    def test_apple_long_id_maps_to_apple_1(self):
+        apple_long = "Apple_bar__minus_00_dot_99_bar__plus_00_dot_95"
+        objects_by_type = {"AppleType": [apple_long]}
+        atoms = [
+            ["atLocation", "agent1", "loc_bar__minus_01"],
+            ["objectType", apple_long, "AppleType"],
+        ]
+        o2a, a2o = build_alias_maps(objects_by_type, atoms)
+        self.assertEqual(o2a[apple_long], "Apple_1")
+        self.assertEqual(a2o["Apple_1"], apple_long)
+
+    def test_dining_table_long_id_maps_to_dining_table_1(self):
+        dt_long = "DiningTable_bar__minus_00_dot_12"
+        objects_by_type = {"DiningTableType": [dt_long]}
+        atoms = [
+            ["atLocation", "agent1", "loc_bar__a"],
+            ["receptacleType", dt_long, "DiningTableType"],
+        ]
+        o2a, _ = build_alias_maps(objects_by_type, atoms)
+        self.assertEqual(o2a[dt_long], "DiningTable_1")
+
+    def test_replace_ids_round_trip(self):
+        apple_long = "Apple_bar__minus_00_dot_99"
+        objects_by_type = {"AppleType": [apple_long]}
+        atoms = [
+            ["atLocation", "agent1", "loc_bar__x"],
+            ["objectType", apple_long, "AppleType"],
+        ]
+        o2a, a2o = build_alias_maps(objects_by_type, atoms)
+        nl = f"Agent agent1 is at loc_bar__x, Apple {apple_long} is pickupable"
+        aliased = replace_ids(nl, o2a)
+        self.assertIn("Apple_1", aliased)
+        self.assertNotIn(apple_long, aliased)
+        restored = replace_ids(aliased, a2o)
+        self.assertEqual(restored, nl)
+
+    def test_replace_ids_longest_first_safe(self):
+        """Shorter keys must not truncate longer aliases (e.g. Apple_1 vs Apple_11)."""
+        alias_to_orig = {"Apple_11": "LONG_ELEVEN", "Apple_1": "LONG_ONE"}
+        text = "STATE 1: Apple_11 is pickupable, Apple_1 is sliced"
+        out = replace_ids(text, alias_to_orig)
+        self.assertIn("LONG_ELEVEN", out)
+        self.assertIn("LONG_ONE", out)
+        self.assertNotIn("Apple_11", out)
+        self.assertNotIn("Apple_1", out)
 
 
 class TestALFWorldErrorDiagnostics(unittest.TestCase):

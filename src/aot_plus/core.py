@@ -274,7 +274,7 @@ class AoTPlus:
         )
         
     def solve(self, initial_state: str, goal_state: str, 
-              temperature: float = 0.0, max_tokens: int = 3000) -> str:
+              temperature: float = 0.0, max_tokens: int = 15000) -> str:
         """Solve a planning problem using AoT+.
         
         Args:

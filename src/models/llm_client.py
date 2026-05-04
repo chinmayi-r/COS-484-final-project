@@ -16,7 +16,7 @@ class LLMClient(ABC):
         self,
         prompt: str,
         temperature: float = 0.0,
-        max_tokens: int = 3000,
+        max_tokens: int = 15000,
     ) -> str:
         """Generate a completion for the provided prompt."""
         pass
@@ -33,7 +33,7 @@ class AnthropicClient(LLMClient):
         self,
         prompt: str,
         temperature: float = 0.0,
-        max_tokens: int = 3000,
+        max_tokens: int = 15000,
     ) -> str:
         """Generate a completion using Claude."""
         try:
@@ -48,6 +48,9 @@ class AnthropicClient(LLMClient):
                     }
                 ],
             )
+            
+            print("STOP REASON:", response.stop_reason)
+            print("USAGE:", response.usage)
 
             if not response.content:
                 return ""
