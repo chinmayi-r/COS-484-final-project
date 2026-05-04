@@ -24,16 +24,19 @@ from typing import Any, Dict, List, Optional, Tuple
 # Ensure repo root is on the path
 sys.path.insert(0, os.path.dirname(__file__))
 
+import copy
+
 from src.aot_plus.core import AoTPlus
-from src.aot_plus.blocksworld_examples import get_blocksworld_json_examples
-from src.aot_plus.logistics_examples import get_logistics_json_examples
+from src.aot_plus.blocksworld_examples import (
+    get_blocksworld_json_examples,
+    get_blocksworld_json_goal_examples,
+)
+from src.aot_plus.logistics_examples import (
+    get_logistics_json_examples,
+    get_logistics_json_goal_examples,
+)
 from src.domains.blocksworld import BlocksWorldDomain
 from src.domains.logistics import LogisticsDomain
-from src.sim.blocksworld_sim import (
-    nl_state_to_canonical as bw_nl_to_canonical,
-    parse_action_text as bw_parse_action,
-    rollout_actions as bw_rollout,
-)
 from src.sim.logistics_sim import (
     LogisticsMeta,
     nl_state_to_canonical as log_nl_to_canonical,
@@ -43,6 +46,124 @@ from src.sim.logistics_sim import (
 )
 from src.eval.common_aot_utils import extract_actions  # used as fallback in extract_plan_summary
 from src.utils.config import Config
+
+
+# ---------------------------------------------------------------------------
+# 4-op Blocksworld simulator (local copy — no cross-import from paper_replication)
+# Operators: pick-up, put-down, unstack, stack
+# ---------------------------------------------------------------------------
+
+def _nl_to_4op_state(nl: str) -> Dict[str, Any]:
+    """Parse NL BW description into 4-op state dict."""
+    blocks = sorted(
+        {m.group(1).upper() for m in re.finditer(r"Block ([A-Za-z0-9]+)", nl, re.IGNORECASE)}
+    )
+    on: Dict[str, str] = {b: "table" for b in blocks}
+    for m in re.finditer(
+        r"Block ([A-Za-z0-9]+) is on (?:Block ([A-Za-z0-9]+)|the table|table)",
+        nl, re.IGNORECASE,
+    ):
+        block = m.group(1).upper()
+        dest = m.group(2).upper() if m.group(2) else "table"
+        on[block] = dest
+    occupied = {v for v in on.values() if v != "table"}
+    clear = sorted(b for b in blocks if b not in occupied)
+    return {"on": on, "clear": clear, "holding": None, "handempty": True}
+
+
+def _parse_4op_action(text: str) -> Tuple[str, List[str]]:
+    """Parse a PDDL action string like '(unstack B A)' → ('unstack', ['B','A']).
+
+    Also handles bare text like 'unstack B A' without parentheses.
+    Raises ValueError on failure.
+    """
+    text = text.strip()
+    # Try parenthesized form first
+    m = re.match(r"^\(\s*([a-zA-Z\-]+)((?:\s+\S+)*)\s*\)$", text)
+    if not m:
+        # Try bare form: "unstack B A"
+        parts = text.split()
+        if not parts:
+            raise ValueError(f"Empty action: {text!r}")
+        op = parts[0].lower()
+        args = [a.upper() for a in parts[1:]]
+        return op, args
+    op = m.group(1).lower()
+    args = [a.upper() for a in m.group(2).split() if a]
+    return op, args
+
+
+def _apply_4op(state: Dict[str, Any], op: str, args: List[str]) -> Dict[str, Any]:
+    """Apply one 4-op BW action. Returns new state or raises ValueError."""
+    s = copy.deepcopy(state)
+    cl: set = set(s["clear"])
+
+    if op == "pick-up":
+        X = args[0]
+        if not s["handempty"]:
+            raise ValueError(f"pick-up {X}: hand not empty")
+        if s["on"].get(X) != "table":
+            raise ValueError(f"pick-up {X}: not on table")
+        if X not in cl:
+            raise ValueError(f"pick-up {X}: not clear")
+        cl.discard(X)
+        s["on"][X] = "held"
+        s["holding"] = X
+        s["handempty"] = False
+
+    elif op == "put-down":
+        X = args[0]
+        if s["holding"] != X:
+            raise ValueError(f"put-down {X}: not holding {X}")
+        s["on"][X] = "table"
+        cl.add(X)
+        s["holding"] = None
+        s["handempty"] = True
+
+    elif op == "unstack":
+        X, Y = args[0], args[1]
+        if not s["handempty"]:
+            raise ValueError(f"unstack {X} {Y}: hand not empty")
+        if s["on"].get(X) != Y:
+            raise ValueError(f"unstack {X} {Y}: {X} not on {Y}")
+        if X not in cl:
+            raise ValueError(f"unstack {X} {Y}: {X} not clear")
+        cl.discard(X)
+        cl.add(Y)
+        s["on"][X] = "held"
+        s["holding"] = X
+        s["handempty"] = False
+
+    elif op == "stack":
+        X, Y = args[0], args[1]
+        if s["holding"] != X:
+            raise ValueError(f"stack {X} {Y}: not holding {X}")
+        if Y not in cl:
+            raise ValueError(f"stack {X} {Y}: {Y} not clear")
+        s["on"][X] = Y
+        cl.discard(Y)
+        cl.add(X)
+        s["holding"] = None
+        s["handempty"] = True
+
+    else:
+        raise ValueError(f"Unknown 4-op: {op!r}")
+
+    s["clear"] = sorted(cl)
+    return s
+
+
+def _rollout_4op(
+    initial: Dict[str, Any],
+    actions: List[Tuple[str, List[str]]],
+) -> Tuple[List[Dict[str, Any]], Optional[int], Optional[str]]:
+    states = [initial]
+    for i, (op, args) in enumerate(actions):
+        try:
+            states.append(_apply_4op(states[-1], op, args))
+        except ValueError as e:
+            return states, i, str(e)
+    return states, None, None
 
 
 # ---------------------------------------------------------------------------
@@ -298,16 +419,11 @@ LOGISTICS_PROBLEMS: List[Tuple[str, str]] = [
 
 
 # ---------------------------------------------------------------------------
-# Goal checking
+# Goal checking + goal-tracking helpers
 # ---------------------------------------------------------------------------
 
 def _bw_goal_satisfied(final_state: Dict[str, Any], goal_nl: str) -> bool:
-    """Check if the final blocksworld state satisfies the NL goal.
-
-    Parses only predicates that are *explicitly stated* in goal_nl so that
-    partial goal specifications (e.g. "Block C is on Block B" with no mention
-    of other blocks) don't generate spurious 'block X on table' constraints.
-    """
+    """Check if the final 4-op BW state satisfies the NL goal."""
     for m in re.finditer(r"Block\s+(\w+)\s+is\s+on\s+Block\s+(\w+)", goal_nl, re.IGNORECASE):
         block, dest = m.group(1).upper(), m.group(2).upper()
         if final_state["on"].get(block) != dest:
@@ -321,6 +437,182 @@ def _bw_goal_satisfied(final_state: Dict[str, Any], goal_nl: str) -> bool:
         if block not in final_state["clear"]:
             return False
     return True
+
+
+def _bw_goal_predicates(goal_state: Dict[str, Any]) -> List[str]:
+    """Return goal predicates derived from a parsed goal state dict."""
+    preds = []
+    for block, loc in sorted(goal_state["on"].items()):
+        if loc == "table":
+            preds.append(f"{block} on table")
+        elif loc not in ("held", None):
+            preds.append(f"{block} on {loc}")
+    for block in sorted(goal_state.get("clear", [])):
+        preds.append(f"{block} clear")
+    return preds
+
+
+def _bw_check_predicates(
+    state: Dict[str, Any], predicates: List[str]
+) -> Tuple[List[str], List[str]]:
+    """Split predicates into (satisfied, remaining) for a given state."""
+    satisfied, remaining = [], []
+    for pred in predicates:
+        m_on = re.match(r"(\w+) on (\w+)", pred)
+        m_cl = re.match(r"(\w+) clear", pred)
+        if m_on:
+            blk, loc = m_on.group(1), m_on.group(2)
+            (satisfied if state["on"].get(blk) == loc else remaining).append(pred)
+        elif m_cl:
+            blk = m_cl.group(1)
+            (satisfied if blk in state.get("clear", []) else remaining).append(pred)
+        else:
+            remaining.append(pred)
+    return satisfied, remaining
+
+
+def _augment_with_goal_tracking(
+    state: Dict[str, Any], predicates: List[str]
+) -> Dict[str, Any]:
+    """Add goal_satisfied/goal_remaining fields to a state dict (in-place copy)."""
+    s = dict(state)
+    satisfied, remaining = _bw_check_predicates(s, predicates)
+    s["goal_satisfied"] = satisfied
+    s["goal_remaining"] = remaining
+    return s
+
+
+# ---------------------------------------------------------------------------
+# Error taxonomy (Conditions B and C — JSON state is machine-readable)
+# ---------------------------------------------------------------------------
+
+_ACTION_LINE_RE = re.compile(r"^ACTION:\s*(.+)$", re.MULTILINE)
+_STATE_JSON_RE = re.compile(r"STATE_JSON:\s*```json\s*(.*?)\s*```", re.DOTALL)
+_SEGMENT_RE = re.compile(
+    r"((?:ACTION:\s*.+\n?)+?)\s*STATE_JSON:\s*```json\s*(.*?)\s*```",
+    re.DOTALL,
+)
+
+
+def _compute_error_taxonomy_bw(
+    raw_output: str,
+    initial_nl: str,
+    goal_nl: str,
+) -> Dict[str, Any]:
+    """
+    Compute error taxonomy by comparing STATE_JSON checkpoints in raw_output
+    with 4-op simulator ground truth.
+
+    Returns dict:
+      n_checkpoints     : number of STATE_JSON blocks found in body (before plan summary)
+      n_parse_failures  : checkpoints where JSON couldn't be parsed
+      first_error_step  : 1-indexed checkpoint index of first state mismatch (or None)
+      error_counts      : {"omission": N, "hallucination": N, "accumulation": N}
+      errors            : list of per-checkpoint error dicts for detailed logging
+    """
+    # Strip plan summary from body to avoid double-counting actions
+    body = raw_output.split("Plan summary:")[0] if "Plan summary:" in raw_output else raw_output
+
+    segments = _SEGMENT_RE.findall(body)
+    if not segments:
+        return {"n_checkpoints": 0, "n_parse_failures": 0,
+                "first_error_step": None,
+                "error_counts": {"omission": 0, "hallucination": 0, "accumulation": 0},
+                "errors": []}
+
+    try:
+        sim_state = _nl_to_4op_state(initial_nl)
+    except Exception:
+        return {"n_checkpoints": len(segments), "n_parse_failures": len(segments),
+                "first_error_step": None,
+                "error_counts": {"omission": 0, "hallucination": 0, "accumulation": 0},
+                "errors": []}
+
+    errors = []
+    n_parse_failures = 0
+    first_error_step = None
+    omission_total = hallucination_total = 0
+    wrong_on_history: Dict[str, List[str]] = {}  # block → list of wrong values
+
+    for ckpt_idx, (actions_block, state_json_str) in enumerate(segments, start=1):
+        # Parse model's STATE_JSON
+        try:
+            model_state = json.loads(state_json_str.strip())
+        except json.JSONDecodeError:
+            n_parse_failures += 1
+            errors.append({"checkpoint": ckpt_idx, "parse_error": True})
+            continue
+
+        # Simulate the actions in this segment
+        action_texts = _ACTION_LINE_RE.findall(actions_block)
+        parsed_actions = []
+        for at in action_texts:
+            try:
+                parsed_actions.append(_parse_4op_action(at))
+            except ValueError:
+                pass  # skip unparseable lines
+
+        for op, args in parsed_actions:
+            try:
+                sim_state = _apply_4op(sim_state, op, args)
+            except ValueError:
+                pass  # illegal action — sim state stays; we still diff
+
+        # Diff model vs simulator on the "on" mapping
+        model_on = model_state.get("on", {})
+        sim_on = sim_state.get("on", {})
+        ckpt_errors: Dict[str, str] = {}  # block → error_type
+
+        for block in set(list(sim_on.keys()) + list(model_on.keys())):
+            sim_val = sim_on.get(block)
+            mod_val = model_on.get(block)
+            if sim_val == mod_val:
+                wrong_on_history.pop(block, None)
+                continue
+
+            # Determine error type
+            if mod_val == sim_state.get("on", {}).get(block):
+                # Model didn't change when it should have → omission
+                ckpt_errors[block] = "omission"
+                omission_total += 1
+            elif sim_val == (sim_state.get("on", {}) if ckpt_idx > 1 else {}).get(block):
+                # Model changed when it shouldn't have → hallucination
+                ckpt_errors[block] = "hallucination"
+                hallucination_total += 1
+            else:
+                ckpt_errors[block] = "omission"
+                omission_total += 1
+
+            # Track accumulation (same wrong value in 3+ consecutive checkpoints)
+            history = wrong_on_history.setdefault(block, [])
+            history.append(mod_val)
+
+        if ckpt_errors and first_error_step is None:
+            first_error_step = ckpt_idx
+
+        errors.append({
+            "checkpoint": ckpt_idx,
+            "parse_error": False,
+            "block_errors": ckpt_errors,
+            "n_actions_in_segment": len(action_texts),
+        })
+
+    # Count accumulation: blocks with 3+ consecutive wrong values
+    accumulation_total = sum(
+        1 for hist in wrong_on_history.values() if len(hist) >= 3
+    )
+
+    return {
+        "n_checkpoints": len(segments),
+        "n_parse_failures": n_parse_failures,
+        "first_error_step": first_error_step,
+        "error_counts": {
+            "omission": omission_total,
+            "hallucination": hallucination_total,
+            "accumulation": accumulation_total,
+        },
+        "errors": errors,
+    }
 
 
 def _log_goal_satisfied(final_state: Dict[str, Any], goal_nl: str) -> bool:
@@ -341,10 +633,10 @@ def _log_goal_satisfied(final_state: Dict[str, Any], goal_nl: str) -> bool:
 def verify_blocksworld(initial_nl: str, goal_nl: str, raw_output: str) -> Tuple[bool, int, str]:
     """
     Returns (goal_achieved, n_actions_extracted, error_message).
-    goal_achieved is True iff all extracted actions are legal AND goal is reached.
+    Uses 4-op PDDL verifier (pick-up/put-down/unstack/stack).
     """
     try:
-        initial = bw_nl_to_canonical(initial_nl)
+        initial = _nl_to_4op_state(initial_nl)
     except Exception as e:
         return False, 0, f"Failed to parse initial state: {e}"
 
@@ -355,11 +647,11 @@ def verify_blocksworld(initial_nl: str, goal_nl: str, raw_output: str) -> Tuple[
     parsed = []
     for a in raw_actions:
         try:
-            parsed.append(bw_parse_action(a))
+            parsed.append(_parse_4op_action(a))
         except ValueError:
             return False, len(parsed), f"Unparseable action: {a!r}"
 
-    states, bad_idx, bad_text = bw_rollout(initial, parsed)
+    states, bad_idx, bad_text = _rollout_4op(initial, parsed)
     if bad_idx is not None:
         return False, len(parsed), f"Illegal action at step {bad_idx}: {bad_text!r}"
 
@@ -409,16 +701,29 @@ def verify_logistics(
 # Solver factory
 # ---------------------------------------------------------------------------
 
-def make_aot_plus_solver(domain: str, provider: str) -> AoTPlus:
-    """Build an AoT+ solver using the hand-crafted JSON few-shot examples."""
+def make_aot_plus_solver(
+    domain: str,
+    provider: str,
+    condition: str = "B",
+    checkpoint_interval: int = 3,
+) -> AoTPlus:
+    """Build an AoT+ solver for the given condition (B or C)."""
+    goal_tracking = (condition == "C")
     if domain == "blocksworld":
         domain_desc = BlocksWorldDomain.get_domain_description()
-        examples = get_blocksworld_json_examples()
+        examples = (get_blocksworld_json_goal_examples() if goal_tracking
+                    else get_blocksworld_json_examples())
     else:
         domain_desc = LogisticsDomain.get_domain_description()
-        examples = get_logistics_json_examples()
+        examples = (get_logistics_json_goal_examples() if goal_tracking
+                    else get_logistics_json_examples())
 
-    solver = AoTPlus(domain_desc, provider, use_json_state=True)
+    solver = AoTPlus(
+        domain_desc, provider,
+        use_json_state=True,
+        state_memoization_interval=checkpoint_interval,
+        goal_tracking=goal_tracking,
+    )
     for ex in examples:
         solver.add_formatted_example(ex)
     return solver
@@ -451,13 +756,15 @@ def evaluate_domain(
     problems: List[Tuple[str, str]],
     provider: str,
     model_name: str,
+    condition: str = "B",
+    checkpoint_interval: int = 3,
     max_tokens: int = 3000,
     delay_secs: float = 1.0,
     output_dir: Optional[str] = None,
     city_map: Optional[Dict[str, str]] = None,
     verbose: bool = False,
 ) -> Dict[str, Any]:
-    solver = make_aot_plus_solver(domain, provider)
+    solver = make_aot_plus_solver(domain, provider, condition, checkpoint_interval)
     results = []
 
     print(f"\n{'='*60}")
@@ -475,8 +782,13 @@ def evaluate_domain(
 
         try:
             if domain == "blocksworld":
-                init_json = json.dumps(bw_nl_to_canonical(init_nl), sort_keys=True)
-                goal_json = json.dumps(bw_nl_to_canonical(goal_nl), sort_keys=True)
+                init_dict = _nl_to_4op_state(init_nl)
+                goal_dict = _nl_to_4op_state(goal_nl)
+                if condition == "C":
+                    preds = _bw_goal_predicates(goal_dict)
+                    init_dict = _augment_with_goal_tracking(init_dict, preds)
+                init_json = json.dumps(init_dict, sort_keys=True)
+                goal_json = json.dumps(goal_dict, sort_keys=True)
             else:
                 init_json = json.dumps(log_nl_to_canonical(init_nl), sort_keys=True)
                 goal_json = json.dumps(log_nl_to_canonical(goal_nl), sort_keys=True)
@@ -512,8 +824,20 @@ def evaluate_domain(
             error_msg = str(e)
             success = False
 
+        # Error taxonomy — only for JSON-parseable conditions (B and C)
+        taxonomy: Dict[str, Any] = {}
+        if domain == "blocksworld" and raw:
+            taxonomy = _compute_error_taxonomy_bw(raw, init_nl, goal_nl)
+
         status = "✓" if success else "✗"
-        print(f"{status}  actions={n_actions:2d}  {error_msg or ''}")
+        tax_str = ""
+        if taxonomy:
+            ec = taxonomy.get("error_counts", {})
+            tax_str = (f"  [ckpts={taxonomy['n_checkpoints']} "
+                       f"om={ec.get('omission',0)} "
+                       f"hal={ec.get('hallucination',0)} "
+                       f"acc={ec.get('accumulation',0)}]")
+        print(f"{status}  actions={n_actions:2d}  {error_msg or ''}{tax_str}")
 
         if verbose and not success:
             print(f"\n  ── RAW OUTPUT (problem {idx}) ──────────────────────────")
@@ -522,14 +846,20 @@ def evaluate_domain(
                 print(f"  … [{len(raw)-3000} chars truncated]")
             print(f"  ── END RAW OUTPUT ──────────────────────────────────\n")
 
-        results.append({
+        result_entry: Dict[str, Any] = {
             "problem_idx": idx,
             "initial_state": init_nl,
             "goal_state":    goal_nl,
             "success":       success,
             "n_actions":     n_actions,
             "error":         error_msg,
-        })
+            "condition":     condition,
+        }
+        if taxonomy:
+            result_entry["error_taxonomy"] = {
+                k: v for k, v in taxonomy.items() if k != "errors"
+            }
+        results.append(result_entry)
 
         if output_dir:
             os.makedirs(f"{output_dir}/{domain}", exist_ok=True)
@@ -544,14 +874,33 @@ def evaluate_domain(
     n_success = sum(r["success"] for r in results)
     accuracy  = n_success / len(results) * 100 if results else 0.0
 
+    # Aggregate error taxonomy across problems
+    taxonomy_agg: Dict[str, Any] = {}
+    if domain == "blocksworld":
+        all_tax = [r.get("error_taxonomy", {}) for r in results if "error_taxonomy" in r]
+        if all_tax:
+            taxonomy_agg = {
+                "total_checkpoints": sum(t.get("n_checkpoints", 0) for t in all_tax),
+                "total_parse_failures": sum(t.get("n_parse_failures", 0) for t in all_tax),
+                "omission": sum(t.get("error_counts", {}).get("omission", 0) for t in all_tax),
+                "hallucination": sum(t.get("error_counts", {}).get("hallucination", 0) for t in all_tax),
+                "accumulation": sum(t.get("error_counts", {}).get("accumulation", 0) for t in all_tax),
+                "problems_with_first_error": sum(
+                    1 for t in all_tax if t.get("first_error_step") is not None
+                ),
+            }
+
     summary = {
-        "domain":      domain,
-        "model":       model_name,
-        "method":      "AoT+",
-        "n_problems":  len(results),
-        "n_success":   n_success,
-        "accuracy_pct": round(accuracy, 1),
-        "results":     results,
+        "domain":             domain,
+        "model":              model_name,
+        "method":             "AoT+",
+        "condition":          condition,
+        "checkpoint_interval": checkpoint_interval,
+        "n_problems":         len(results),
+        "n_success":          n_success,
+        "accuracy_pct":       round(accuracy, 1),
+        "error_taxonomy_agg": taxonomy_agg,
+        "results":            results,
     }
 
     if output_dir:
@@ -567,11 +916,15 @@ def evaluate_domain(
 
 def main():
     import argparse
-    parser = argparse.ArgumentParser(description="Run AoT+ with gpt-4o-mini")
+    parser = argparse.ArgumentParser(description="Run AoT+ JSON extension (Conditions B/C)")
     parser.add_argument("--provider", default="openai",
                         choices=["openai", "sandbox", "azure_openai"])
     parser.add_argument("--domain",   default="both",
                         choices=["blocksworld", "logistics", "both"])
+    parser.add_argument("--condition", default="B", choices=["B", "C"],
+                        help="B=JSON state only; C=JSON state + goal tracking")
+    parser.add_argument("--checkpoint_interval", type=int, default=3,
+                        help="Output STATE_JSON every N actions (default 3, matches paper)")
     parser.add_argument("--n_bw",  type=int, default=20,
                         help="Number of Blocksworld problems to run")
     parser.add_argument("--n_log", type=int, default=15,
@@ -651,6 +1004,8 @@ def main():
             problems=bw_probs,
             provider=args.provider,
             model_name=model_name,
+            condition=args.condition,
+            checkpoint_interval=args.checkpoint_interval,
             max_tokens=args.max_tokens,
             delay_secs=args.delay,
             output_dir=args.output_dir,
@@ -663,6 +1018,8 @@ def main():
             problems=log_probs,
             provider=args.provider,
             model_name=model_name,
+            condition=args.condition,
+            checkpoint_interval=args.checkpoint_interval,
             max_tokens=args.max_tokens,
             delay_secs=args.delay,
             output_dir=args.output_dir,
@@ -672,12 +1029,20 @@ def main():
 
     # Print results table
     source = "PlanBench" if use_planbench else "fallback bank"
+    cond_label = f"Condition {args.condition}, k={args.checkpoint_interval}"
     print(f"\n{'='*60}")
-    print(f"  AoT+ Results — {model_name}  [{source}]")
+    print(f"  AoT+ JSON Extension — {model_name}  [{source}]")
+    print(f"  {cond_label}")
     print(f"  {'Domain':<15} {'Solved':>8} {'Accuracy':>10}")
     print(f"  {'-'*35}")
     for domain, s in summaries.items():
         print(f"  {domain:<15} {s['n_success']:>4}/{s['n_problems']:<4} {s['accuracy_pct']:>8.1f}%")
+        if s.get("error_taxonomy_agg"):
+            ta = s["error_taxonomy_agg"]
+            print(f"    taxonomy: omission={ta['omission']} "
+                  f"hallucination={ta['hallucination']} "
+                  f"accumulation={ta['accumulation']} "
+                  f"problems_with_error={ta['problems_with_first_error']}")
     print(f"{'='*60}\n")
 
     if args.output_dir:

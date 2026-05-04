@@ -8,10 +8,11 @@ class AoTPlusPromptBuilder:
     """Builder for AoT+ style prompts with state memoization and random trajectory augmentation."""
 
     def __init__(self, domain_description: str, use_json_state: bool = False,
-                 state_memoization_interval: int = 3):
+                 state_memoization_interval: int = 3, goal_tracking: bool = False):
         self.domain_description = domain_description
         self.use_json_state = use_json_state
         self.state_memoization_interval = state_memoization_interval
+        self.goal_tracking = goal_tracking
         self.examples = []
         self.formatted_examples: List[str] = []
         self._formatted_examples_block: str = ""  # pre-built for JSON prompt reuse
@@ -42,10 +43,17 @@ class AoTPlusPromptBuilder:
         This is structurally equivalent to build_bw_messages / build_log_messages
         used by the paper replication runner.
         """
+        k = self.state_memoization_interval
+        goal_instr = (
+            " Each STATE_JSON must include 'goal_satisfied' (list of goal predicates "
+            "already achieved) and 'goal_remaining' (list not yet achieved)."
+            if self.goal_tracking else ""
+        )
         system_content = (
             "You are a planning assistant. Solve planning problems step by step using "
             "the Algorithm of Thoughts approach demonstrated in the examples. "
-            "After EVERY action output exactly one STATE_JSON block. "
+            f"Every {k} actions output one STATE_JSON block showing the complete current "
+            f"world state; always output a STATE_JSON block after your final action.{goal_instr} "
             "End with a 'Plan summary:' numbered list of the committed actions only."
         )
         if self.domain_description:
@@ -228,6 +236,12 @@ Start your solution:
 
     def _build_json_prompt(self, initial_state_json: str, goal_state_json: str,
                            extra_context: str = "") -> str:
+        k = self.state_memoization_interval
+        goal_rule = (
+            f"\n7. Each STATE_JSON must include 'goal_satisfied' and 'goal_remaining' "
+            "fields tracking which goal predicates are already achieved."
+            if self.goal_tracking else ""
+        )
         prompt = f"""# Algorithm of Thoughts Plus (AoT+) Planning System — JSON State Mode
 
 ## Domain Description:
@@ -238,19 +252,16 @@ Given an initial state and a goal state (both in JSON), create a plan to transfo
 state into the goal state.
 
 ### CRITICAL Output Format Rules:
-1. For each action, output a line starting with "ACTION:" followed by the action description
-2. Immediately after EVERY action (no exceptions), output a STATE_JSON block showing the
-   complete updated world state in this exact format:
+1. For each action, output a line starting with "ACTION:" followed by the action description.
+2. After every {k} actions, output one STATE_JSON block showing the complete updated world
+   state in this exact format:
    STATE_JSON: ```json
    {{...}}
    ```
-3. Every single action must be followed by exactly one STATE_JSON block
-4. Do not skip state updates for any action
-5. Explore different paths if needed; if you backtrack, still output ACTION + STATE_JSON
-   for each move (including the undo moves)
-6. End with a "Plan summary:" section listing only the final successful actions
-7. Before moving a block, verify it appears in the "clear" array of the current STATE_JSON.
-   A block is NOT clear (and cannot be moved) if another block is stacked on top of it.
+3. Always output a STATE_JSON block after your final action.
+4. If you backtrack, output ACTION lines for the undo moves and include them in the checkpoint count.
+5. End with a "Plan summary:" section listing only the final committed actions.
+6. Before moving a block, verify it appears in the "clear" array of the current STATE_JSON.{goal_rule}
 
 ## Examples:
 """
@@ -279,12 +290,14 @@ class AoTPlus:
     """Main implementation of Algorithm of Thoughts Plus."""
 
     def __init__(self, domain_description: str, llm_provider: Optional[str] = None,
-                 use_json_state: bool = False, state_memoization_interval: int = 3):
+                 use_json_state: bool = False, state_memoization_interval: int = 3,
+                 goal_tracking: bool = False):
         self.llm_client = get_llm_client(llm_provider)
         self.prompt_builder = AoTPlusPromptBuilder(
             domain_description,
             use_json_state=use_json_state,
             state_memoization_interval=state_memoization_interval,
+            goal_tracking=goal_tracking,
         )
 
     def add_formatted_example(self, example_str: str) -> None:
