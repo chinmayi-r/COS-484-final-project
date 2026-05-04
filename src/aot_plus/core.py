@@ -1,55 +1,129 @@
 """Core implementation of the Algorithm of Thoughts Plus (AoT+) methodology."""
 from typing import Dict, List, Optional, Any, Callable
+import json
 import re
 
 from src.models.llm_client import get_llm_client
 
+
 class AoTPlusPromptBuilder:
-    """Builder for AoT+ style prompts with state memoization and random trajectory augmentation."""
+    """Builder for AoT+ prompts.
+
+    Supports three modes:
+        1. Natural language state memoization: use_json_state=False
+        2. Structured JSON state memoization: use_json_state=True, use_goal_residual=False
+        3. JSON + goal residual tracking: use_json_state=True, use_goal_residual=True
+    """
 
     def __init__(
         self,
         domain_description: str,
         use_json_state: bool = False,
+        use_goal_residual: bool = False,
         state_memoization_interval: int = 3,
         state_transition_fn: Optional[Callable[[str, str], str]] = None,
     ):
         self.domain_description = domain_description
         self.use_json_state = use_json_state
+        self.use_goal_residual = use_goal_residual
         self.state_memoization_interval = state_memoization_interval
         self.state_transition_fn = state_transition_fn
         self.examples = []
         self.formatted_examples: List[str] = []
-    
+
     def add_formatted_example(self, example_str: str) -> None:
-        """Add a pre-formatted example string (used for JSON mode where states are hardcoded)."""
+        """Add a pre-formatted example string.
+
+        This is most useful for JSON mode, where you may hand-write examples with
+        STATE_JSON blocks.
+        """
         self.formatted_examples.append(example_str)
 
-    def add_example(self, initial_state: str, goal_state: str, solution_trajectory: List[str],
-                   random_trajectories: List[List[str]]) -> None:
+    def add_example(
+        self,
+        initial_state: str,
+        goal_state: str,
+        solution_trajectory: List[str],
+        random_trajectories: List[List[str]],
+    ) -> None:
         """Add a few-shot example with both successful and random trajectories."""
         self.examples.append({
             "initial_state": initial_state,
             "goal_state": goal_state,
             "solution_trajectory": solution_trajectory,
-            "random_trajectories": random_trajectories
+            "random_trajectories": random_trajectories,
         })
-    
-    def _format_state_memoization(self, state_id: str, state_description: str) -> str:
+
+    def _state_to_json_dict(self, state_description) -> Dict[str, Any]:
+        """Convert a state object/string/dict into a JSON-serializable dict."""
+        if hasattr(state_description, "to_json_dict"):
+            return state_description.to_json_dict()
+
+        if isinstance(state_description, dict):
+            return dict(state_description)
+
+        if isinstance(state_description, str):
+            try:
+                parsed = json.loads(state_description)
+                if isinstance(parsed, dict):
+                    return parsed
+                return {"state": parsed}
+            except json.JSONDecodeError:
+                # Fallback: still valid JSON, but indicates this state was only text.
+                return {"state_text": state_description}
+
+        return {"state_text": str(state_description)}
+
+    def _format_state_memoization(
+        self,
+        state_id: str,
+        state_description,
+        goal_state=None,
+    ) -> str:
         """Format a state memoization entry.
 
-        In JSON mode: state_description must be a JSON string; wraps in STATE_JSON fenced block.
-        In text mode: outputs the classic STATE N: <text> line.
+        Natural-language mode:
+            STATE 1: Agent A is at ...
+
+        JSON mode:
+            STATE_JSON:
+            ```json
+            {...}
+            ```
+
+        JSON + residual mode additionally includes:
+            goal_satisfied
+            goal_remaining
         """
         if self.use_json_state:
-            return f"STATE_JSON: ```json\n{state_description}\n```\n"
+            state_dict = self._state_to_json_dict(state_description)
+
+            if self.use_goal_residual:
+                if goal_state is not None and hasattr(state_description, "compute_goal_diff"):
+                    satisfied, remaining = state_description.compute_goal_diff(goal_state)
+                else:
+                    # For model-output prompting, the model will fill these fields.
+                    # For generated examples, these remain empty unless the domain state
+                    # object implements compute_goal_diff().
+                    satisfied, remaining = [], []
+
+                state_dict["goal_satisfied"] = satisfied
+                state_dict["goal_remaining"] = remaining
+
+            return (
+                "STATE_JSON:\n"
+                "```json\n"
+                f"{json.dumps(state_dict, indent=2, sort_keys=True)}\n"
+                "```\n"
+            )
+
         return f"STATE {state_id}: {state_description}\n"
-    
+
     def _make_state_id(self, parent_state_id: Optional[str], candidate_index: int) -> str:
         if parent_state_id is None:
             return str(candidate_index)
         return f"{parent_state_id}.{candidate_index}"
-    
+
     def _format_example(self, example: Dict[str, Any]) -> str:
         """Format a complete example with failed branches first, then successful path."""
         initial_state = example["initial_state"]
@@ -79,7 +153,7 @@ class AoTPlusPromptBuilder:
                 if self.state_transition_fn is not None:
                     branch_state = self.state_transition_fn(branch_state, action)
 
-                result += self._format_state_memoization(state_id, branch_state)
+                result += self._format_state_memoization(state_id, branch_state, goal_state)
                 branch_state_id = state_id
 
             result += f"STATE {branch_state_id} does not satisfy the goal. Backtrack to the initial state.\n\n"
@@ -102,18 +176,17 @@ class AoTPlusPromptBuilder:
             if self.state_transition_fn is not None:
                 current_state = self.state_transition_fn(current_state, action)
 
-            result += self._format_state_memoization(state_id, current_state)
-
+            result += self._format_state_memoization(state_id, current_state, goal_state)
             current_state_id = state_id
 
         result += f"\nFinal check: {goal_state} has been achieved.\n"
-
         return result
-    
-    def build_prompt(self, initial_state: str, goal_state: str) -> str:
-        """Build the complete AoT+ prompt for the given problem.
 
-        initial_state / goal_state are JSON strings in JSON mode, natural language otherwise.
+    def build_prompt(self, initial_state: str, goal_state: str) -> str:
+        """Build the complete AoT+ prompt.
+
+        initial_state / goal_state are natural language in text mode and JSON strings
+        in JSON modes.
         """
         if self.use_json_state:
             return self._build_json_prompt(initial_state, goal_state)
@@ -197,6 +270,19 @@ Start your solution:
         return prompt
 
     def _build_json_prompt(self, initial_state_json: str, goal_state_json: str) -> str:
+        residual_rules = ""
+        if self.use_goal_residual:
+            residual_rules = """
+7. Every STATE_JSON block must include these two extra fields:
+   - "goal_satisfied": a list of goal conditions already true
+   - "goal_remaining": a list of goal conditions not yet true
+8. Use "goal_remaining" to decide what still needs to be done.
+"""
+        else:
+            residual_rules = """
+7. Do not include goal_satisfied or goal_remaining unless explicitly requested.
+"""
+
         prompt = f"""# Algorithm of Thoughts Plus (AoT+) Planning System — JSON State Mode
 
 ## Domain Description:
@@ -208,21 +294,24 @@ state into the goal state.
 
 ### CRITICAL Output Format Rules:
 1. For each action, output a line starting with "ACTION:" followed by the action description
-2. Immediately after EVERY action (no exceptions), output a STATE_JSON block showing the
-   complete updated world state in this exact format:
-   STATE_JSON: ```json
+2. Immediately after EVERY action (no exceptions), output a STATE_JSON block showing the complete updated world state.
+3. Use this exact block format:
+   STATE_JSON:
+   ```json
    {{...}}
    ```
-3. Every single action must be followed by exactly one STATE_JSON block
-4. Do not skip state updates for any action
-5. Explore different paths if needed; if you backtrack, still output ACTION + STATE_JSON
-   for each move (including the undo moves)
-6. End with a "Plan summary:" section listing only the final successful actions
+4. Every single action must be followed by exactly one STATE_JSON block.
+5. Do not skip state updates for any action.
+6. Every STATE_JSON block must be valid parseable JSON. Do not use comments or trailing commas.
+{residual_rules}9. Explore different paths if needed; if you backtrack, still output ACTION + STATE_JSON for each move.
+10. End with a "Plan summary:" section listing only the final successful actions.
 
 ## Examples:
 """
         for ex in self.formatted_examples:
             prompt += f"{ex}\n---\n\n"
+
+        initial_state_block = self._ensure_initial_state_json_for_prompt(initial_state_json)
 
         prompt += f"""## Problem to Solve:
 
@@ -232,8 +321,9 @@ Initial state (JSON):
 Goal state (JSON):
 {goal_state_json}
 
-STATE_JSON: ```json
-{initial_state_json}
+STATE_JSON:
+```json
+{initial_state_block}
 ```
 
 Solve this step by step. Remember: after EVERY ACTION output exactly one STATE_JSON block.
@@ -241,6 +331,21 @@ Solve this step by step. Remember: after EVERY ACTION output exactly one STATE_J
 Start your solution:
 """
         return prompt
+
+    def _ensure_initial_state_json_for_prompt(self, initial_state_json: str) -> str:
+        """Return a valid JSON string for the initial STATE_JSON block."""
+        try:
+            state_dict = json.loads(initial_state_json)
+            if self.use_goal_residual:
+                state_dict.setdefault("goal_satisfied", [])
+                state_dict.setdefault("goal_remaining", [])
+            return json.dumps(state_dict, indent=2, sort_keys=True)
+        except json.JSONDecodeError:
+            state_dict = {"state_text": initial_state_json}
+            if self.use_goal_residual:
+                state_dict["goal_satisfied"] = []
+                state_dict["goal_remaining"] = []
+            return json.dumps(state_dict, indent=2, sort_keys=True)
 
 
 class AoTPlus:
@@ -251,6 +356,7 @@ class AoTPlus:
         domain_description: str,
         llm_provider: Optional[str] = None,
         use_json_state: bool = False,
+        use_goal_residual: bool = False,
         state_memoization_interval: int = 3,
         state_transition_fn: Optional[Callable[[str, str], str]] = None,
     ):
@@ -258,62 +364,58 @@ class AoTPlus:
         self.prompt_builder = AoTPlusPromptBuilder(
             domain_description,
             use_json_state=use_json_state,
+            use_goal_residual=use_goal_residual,
             state_memoization_interval=state_memoization_interval,
             state_transition_fn=state_transition_fn,
         )
 
     def add_formatted_example(self, example_str: str) -> None:
-        """Add a pre-formatted example (JSON mode)."""
+        """Add a pre-formatted example."""
         self.prompt_builder.add_formatted_example(example_str)
 
-    def add_example(self, initial_state: str, goal_state: str, solution_trajectory: List[str],
-                   random_trajectories: List[List[str]]) -> None:
+    def add_example(
+        self,
+        initial_state: str,
+        goal_state: str,
+        solution_trajectory: List[str],
+        random_trajectories: List[List[str]],
+    ) -> None:
         """Add a few-shot example to the prompt builder."""
         self.prompt_builder.add_example(
-            initial_state, goal_state, solution_trajectory, random_trajectories
+            initial_state,
+            goal_state,
+            solution_trajectory,
+            random_trajectories,
         )
-        
-    def solve(self, initial_state: str, goal_state: str, 
-              temperature: float = 0.0, max_tokens: int = 15000) -> str:
-        """Solve a planning problem using AoT+.
-        
-        Args:
-            initial_state: Description of the initial state
-            goal_state: Description of the goal state
-            temperature: Sampling temperature for the LLM
-            max_tokens: Maximum number of tokens to generate
-            
-        Returns:
-            The generated solution plan
-        """
+
+    def solve(
+        self,
+        initial_state: str,
+        goal_state: str,
+        temperature: float = 0.0,
+        max_tokens: int = 25000,
+    ) -> str:
+        """Solve a planning problem using AoT+."""
         prompt = self.prompt_builder.build_prompt(initial_state, goal_state)
         return self.llm_client.generate(prompt, temperature, max_tokens)
-    
+
     def extract_plan(self, solution_text: str) -> List[str]:
-        """Extract the final plan steps from the solution text.
-        
-        Args:
-            solution_text: The raw output from the LLM
-            
-        Returns:
-            List of plan steps
-        """
+        """Extract the final plan steps from the solution text."""
         steps = []
-        
-        # First try to extract from "Plan summary:" section
+
+        # First try to extract from "Plan summary:" section.
         plan_summary_pattern = r"[Pp]lan [Ss]ummary:?(.*?)(?=$|\n\n)"
         plan_summary_match = re.search(plan_summary_pattern, solution_text, re.DOTALL)
-        
+
         if plan_summary_match:
-            # Extract steps from numbered list in plan summary
             plan_summary = plan_summary_match.group(1)
-            numbered_step_pattern = r"(\d+)[\.:\)]\s+(.*?)(?=\n\d+[\.:\)]|\Z)"
+            numbered_step_pattern = r"(\d+)[\.\:\)]\s+(.*?)(?=\n\d+[\.\:\)]|\Z)"
             for match in re.finditer(numbered_step_pattern, plan_summary, re.DOTALL):
                 step = match.group(2).strip()
                 if step:
                     steps.append(step)
-        
-        # If no steps found from plan summary, look for ACTION: format
+
+        # If no steps found from plan summary, look for ACTION: format.
         if not steps:
             action_pattern = r"ACTION:\s*(.*?)(?=STATE|ACTION|\n\n|$)"
             action_matches = re.finditer(action_pattern, solution_text)
@@ -321,8 +423,8 @@ class AoTPlus:
                 action = match.group(1).strip()
                 if action and not action.lower().startswith("no action"):
                     steps.append(action)
-        
-        # If still no steps found, try Step format
+
+        # If still no steps found, try Step format.
         if not steps:
             step_pattern = r"Step (\d+):\s*(.*?)(?=Step \d+:|$)"
             step_matches = re.finditer(step_pattern, solution_text, re.DOTALL)
@@ -330,14 +432,13 @@ class AoTPlus:
                 step = match.group(2).strip()
                 if step and not any(x in step.lower() for x in ["let's try", "approach isn't", "backtrack"]):
                     steps.append(step)
-        
-        # If still no steps found, look for numbered actions outside of plan summary
+
+        # If still no steps found, look for numbered actions outside of plan summary.
         if not steps:
-            # First check for a list of actions with ordinal numbers
-            action_list_pattern = r"(?:^|\n)(\d+)[\.:\)]\s+(.*?)(?=\n\d+[\.:\)]|\Z)"
+            action_list_pattern = r"(?:^|\n)(\d+)[\.\:\)]\s+(.*?)(?=\n\d+[\.\:\)]|\Z)"
             for match in re.finditer(action_list_pattern, solution_text, re.DOTALL):
                 step = match.group(2).strip()
                 if step and not any(x in step.lower() for x in ["let's try", "approach isn't", "backtrack"]):
                     steps.append(step)
-        
+
         return steps

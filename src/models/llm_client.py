@@ -16,7 +16,7 @@ class LLMClient(ABC):
         self,
         prompt: str,
         temperature: float = 0.0,
-        max_tokens: int = 15000,
+        max_tokens: int = 25000,
     ) -> str:
         """Generate a completion for the provided prompt."""
         pass
@@ -33,33 +33,36 @@ class AnthropicClient(LLMClient):
         self,
         prompt: str,
         temperature: float = 0.0,
-        max_tokens: int = 15000,
+        max_tokens: int = 25000,
     ) -> str:
-        """Generate a completion using Claude."""
+        """Generate a completion using Claude with streaming."""
         try:
-            response = self.client.messages.create(
+            chunks = []
+
+            with self.client.messages.stream(
                 model=self.model,
                 max_tokens=max_tokens,
                 temperature=temperature,
                 messages=[
-                    {
-                        "role": "user",
-                        "content": prompt,
-                    }
+                    {"role": "user", "content": prompt}
                 ],
-            )
-            
-            print("STOP REASON:", response.stop_reason)
-            print("USAGE:", response.usage)
+            ) as stream:
+                for text in stream.text_stream:
+                    chunks.append(text)
 
-            if not response.content:
-                return ""
+                final_message = stream.get_final_message()
 
-            return response.content[0].text
+            print("\n========== LLM DEBUG ==========")
+            print(f"MODEL: {self.model}")
+            print(f"STOP REASON: {final_message.stop_reason}")
+            print(f"USAGE: {final_message.usage}")
+            print("================================\n")
+
+            return "".join(chunks)
 
         except Exception as e:
-            print(f"Error calling Anthropic API: {str(e)}")
-            return f"Error generating response: {str(e)}"
+            print(f"Error calling Anthropic API: {e}")
+            return f"Error generating response: {e}"
 
 
 def get_llm_client(provider: Optional[str] = None) -> LLMClient:

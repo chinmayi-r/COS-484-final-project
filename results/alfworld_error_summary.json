@@ -1,8 +1,9 @@
 {
-  "episodes": 3,
-  "steps": 19,
-  "propagation_errors": 3,
-  "accumulation_errors": 16,
-  "omission_errors": 6,
-  "hallucination_errors": 5
+  "episodes": 5,
+  "steps": 35,
+  "propagation_errors": 0,
+  "accumulation_errors": 0,
+  "omission_errors": 0,
+  "hallucination_errors": 0,
+  "malformed_json_states": 0
 }

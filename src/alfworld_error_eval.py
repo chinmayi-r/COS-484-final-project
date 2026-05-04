@@ -29,7 +29,7 @@ DYNAMIC_PREDICATES = {
 CAPABILITY_WORDS = {
     "pickupable": "pickupable",
     "moveable": "moveable",
-    "cleanable": "clean",
+    "cleanable": "cleanable",
     "heatable": "heatable",
     "coolable": "coolable",
     "toggleable": "toggleable",
@@ -45,6 +45,11 @@ CAPABILITY_WORDS = {
 STATE_HEADER_RE = re.compile(
     r"^STATE(?:\s+([0-9]+(?:\.[0-9]+)*))?\s*:\s*(.*)$",
     re.IGNORECASE,
+)
+
+STATE_JSON_BLOCK_RE = re.compile(
+    r"STATE_JSON:\s*```json\s*(.*?)\s*```",
+    re.IGNORECASE | re.DOTALL,
 )
 
 
@@ -325,6 +330,36 @@ def init_atoms_to_nl(atoms, max_facts):
             break
     return ", ".join(deduped)
 
+def goal_to_json_spec(node):
+    if not isinstance(node, list) or not node:
+        return {"type": "empty_goal"}
+
+    head = node[0]
+
+    if head in {"and", "or"}:
+        return {
+            "type": head,
+            "conditions": [goal_to_json_spec(child) for child in node[1:]],
+        }
+
+    if head == "exists":
+        return {
+            "type": "exists",
+            "variables": node[1],
+            "condition": goal_to_json_spec(node[2]),
+        }
+
+    if head == "not" and len(node) > 1:
+        return {
+            "type": "not",
+            "condition": goal_to_json_spec(node[1]),
+        }
+
+    return {
+        "type": "predicate",
+        "predicate": head,
+        "args": node[1:],
+    }
 
 def goal_to_text(node):
     """Render a parsed PDDL goal formula as readable text for the prompt."""
@@ -400,6 +435,109 @@ def prefix_chain(leaf_label):
     """Return all numeric prefixes from root to leaf, e.g. (3,), (3, 1)."""
     return [leaf_label[:i] for i in range(1, len(leaf_label) + 1)] if leaf_label else []
 
+
+
+def extract_state_json_blocks(solution_text):
+    """Extract parseable STATE_JSON blocks from model output.
+
+    Returns:
+        states: list[dict]
+        parse_errors: list[dict]
+    """
+    states = []
+    parse_errors = []
+
+    for i, match in enumerate(STATE_JSON_BLOCK_RE.finditer(solution_text), start=1):
+        raw_json = match.group(1).strip()
+        try:
+            states.append(json.loads(raw_json))
+        except json.JSONDecodeError as exc:
+            parse_errors.append({
+                "state_index": i,
+                "error": "malformed_state_json",
+                "detail": str(exc),
+                "raw": raw_json,
+            })
+
+    return states, parse_errors
+
+
+def extract_actions_and_json_states(solution_text):
+    """Extract ACTION lines plus STATE_JSON blocks in order.
+
+    This is intentionally simple: it aligns the nth ACTION with the nth
+    STATE_JSON block. Malformed JSON is reported separately by
+    extract_state_json_blocks().
+    """
+    actions = []
+    for raw_line in solution_text.splitlines():
+        line = raw_line.strip()
+        if line.startswith("ACTION:"):
+            action = line[len("ACTION:") :].strip()
+            while action.upper().startswith("ACTION:"):
+                action = action[len("ACTION:") :].lstrip(": ")
+            if action:
+                actions.append(action)
+
+    json_states, parse_errors = extract_state_json_blocks(solution_text)
+    return actions[: len(json_states)], json_states, parse_errors
+
+
+def json_state_to_nl(state_json, type_lookup=None):
+    """Convert compact ALFWorld JSON state back into NL facts for existing evaluator.
+
+    The existing diagnostics compare natural-language parsed states. This helper
+    lets JSON outputs reuse that evaluator by converting JSON fields into the
+    same sentence format.
+    """
+    type_lookup = type_lookup or {}
+    facts = []
+
+    def obj_type(obj):
+        return type_lookup.get(obj, "Object")
+
+    def receptacle_type(receptacle):
+        return type_lookup.get(receptacle, "Receptacle")
+
+    agent = state_json.get("agent", {})
+    agent_id = agent.get("id", "agent1")
+    if agent.get("location") is not None:
+        facts.append(f"Agent {agent_id} is at {agent['location']}")
+    if agent.get("holding"):
+        held = agent["holding"]
+        facts.append(f"Agent {agent_id} is holding {obj_type(held)} {held}")
+    else:
+        facts.append(f"Agent {agent_id} is holding nothing")
+
+    for receptacle, location in sorted(state_json.get("receptacle_at_location", {}).items()):
+        facts.append(f"{receptacle_type(receptacle)} {receptacle} is at {location}")
+
+    for receptacle in sorted(state_json.get("opened", [])):
+        facts.append(f"{receptacle_type(receptacle)} {receptacle} is opened")
+
+    for obj, receptacle in sorted(state_json.get("in_receptacle", {}).items()):
+        facts.append(f"{obj_type(obj)} {obj} is in {receptacle_type(receptacle)} {receptacle}")
+
+    contained = set(state_json.get("in_receptacle", {}).keys())
+    held = agent.get("holding")
+    for obj, location in sorted(state_json.get("object_at_location", {}).items()):
+        if obj in contained or obj == held:
+            continue
+        facts.append(f"{obj_type(obj)} {obj} is at {location}")
+
+    property_fields = {
+        "is_clean": "clean",
+        "is_hot": "hot",
+        "is_cool": "cool",
+        "is_on": "on",
+        "is_toggled": "toggled",
+        "is_sliced": "sliced",
+    }
+    for field, word in property_fields.items():
+        for obj in sorted(state_json.get(field, [])):
+            facts.append(f"{obj_type(obj)} {obj} is {word}")
+
+    return ", ".join(facts)
 
 def extract_actions_and_states(solution_text):
     """Extract the committed ACTION/STATE chain from an AoT+ trace.
@@ -659,7 +797,8 @@ def evaluate_dataset(args):
     llm_client = get_llm_client(args.provider)
     prompt_builder = AoTPlusPromptBuilder(
         ALFWorldDomain.get_domain_description(),
-        use_json_state=False,
+        use_json_state=args.use_json_state,
+        use_goal_residual=args.use_goal_residual,
         state_transition_fn=ALFWorldState.apply_action,
     )
     
@@ -690,6 +829,7 @@ def empty_totals():
         "accumulation_errors": 0,
         "omission_errors": 0,
         "hallucination_errors": 0,
+        "malformed_json_states": 0,
     }
 
 
@@ -715,6 +855,29 @@ def evaluate_file(path, args, llm_client, prompt_builder, totals):
     initial_state_for_prompt = replace_ids(initial_state_nl, original_to_alias)
     goal_state_for_prompt = replace_ids(goal_state_nl, original_to_alias)
 
+    initial_state_obj = ALFWorldDomain.parse_state_description(initial_state_nl)
+
+    if args.use_json_state:
+        initial_json = initial_state_obj.to_json_dict()
+
+        goal_json = {
+            "goal_text": goal_state_for_prompt,
+            "goal_formula": replace_ids(goal_block.strip(), original_to_alias),
+            "goal_spec": goal_to_json_spec(
+                parse_sexpr(replace_ids(goal_block, original_to_alias))
+            ),
+        }
+
+        if args.use_goal_residual:
+            initial_json["goal_satisfied"] = []
+            initial_json["goal_remaining"] = [goal_state_for_prompt]
+
+        initial_state_for_prompt = replace_ids(
+            json.dumps(initial_json, indent=2, sort_keys=True),
+            original_to_alias,
+        )
+        goal_state_for_prompt = json.dumps(goal_json, indent=2, sort_keys=True)
+
     prompt = prompt_builder.build_prompt(initial_state_for_prompt, goal_state_for_prompt)
     print("\n========== PROMPT ==========")
     print(prompt)
@@ -726,40 +889,20 @@ def evaluate_file(path, args, llm_client, prompt_builder, totals):
     print("========== END RAW MODEL OUTPUT ==========\n")
 
     llm_output_for_eval = replace_ids(llm_output, alias_to_original)
-    actions, states = extract_actions_and_states(llm_output_for_eval)
+    json_parse_errors = []
+
+    if args.use_json_state:
+        actions, json_states, json_parse_errors = extract_actions_and_json_states(llm_output_for_eval)
+        initial_type_lookup = {}
+        parsed_initial = ALFWorldDomain.parse_state_description(initial_state_nl)
+        initial_type_lookup.update(parsed_initial.object_type)
+        initial_type_lookup.update(parsed_initial.receptacle_type)
+        states = [json_state_to_nl(state, initial_type_lookup) for state in json_states]
+        totals["malformed_json_states"] += len(json_parse_errors)
+    else:
+        actions, states = extract_actions_and_states(llm_output_for_eval)
+
     per_step, accumulation_facts = episode_diagnostics(actions, states, initial_state_nl)
-    
-    print("\n========== ERROR DETAILS ==========")
-    for step in per_step:
-        print(f"\nStep {step['step']}: {step['action']}")
-
-        if step["propagation_error"]:
-            print("  PROPAGATION ERROR:")
-            print("   First step where model state diverged from true state.")
-            print("   Divergence facts:")
-            for fact in step["divergence_facts"][:20]:
-                print("    ", fact)
-
-        if step["accumulation_error"]:
-            print("  ACCUMULATION ERROR:")
-            print("   A previous divergence persisted into this step.")
-
-        if step["omission_error"]:
-            print("  OMISSION ERROR:")
-            print("   Expected state changes missing from model state:")
-            for fact in step["omission_facts"]:
-                print("    ", fact)
-
-        if step["hallucination_error"]:
-            print("  HALLUCINATION ERROR:")
-            print("   Model state changed facts that true transition did not change:")
-            for fact in step["hallucination_facts"]:
-                print("    ", fact)
-
-    print("\nAccumulation facts that persisted:")
-    for fact in accumulation_facts[:50]:
-        print(" ", fact)
-    print("========== END ERROR DETAILS ==========\n")
     
     update_totals(totals, per_step)
 
@@ -772,13 +915,24 @@ def evaluate_file(path, args, llm_client, prompt_builder, totals):
 
     print("\n========== GOAL DEBUG ==========")
     print("Goal node:", goal_node)
-    print("isCool facts:", sorted(f for f in final_true_facts if f[0] == "isCool"))
-    print("Apple objectType facts:", sorted(f for f in final_true_facts if f[0] == "objectType" and "Apple" in str(f)))
-    print("DiningTable receptacleType facts:", sorted(f for f in final_true_facts if f[0] == "receptacleType" and "DiningTable" in str(f)))
-    print("Apple in DiningTable facts:", sorted(
-        f for f in final_true_facts
-        if f[0] == "inReceptacle" and "Apple" in str(f) and "DiningTable" in str(f)
-    ))
+    print("Final true facts relevant to goal predicates:")
+
+    goal_preds = set()
+
+    def collect_goal_preds(node):
+        if isinstance(node, list) and node:
+            head = node[0]
+            if head not in {"and", "or", "exists", "not"}:
+                goal_preds.add(head)
+            for child in node[1:]:
+                collect_goal_preds(child)
+
+    collect_goal_preds(goal_node)
+
+    for pred in sorted(goal_preds):
+        print(f"{pred} facts:", sorted(f for f in final_true_facts if f[0] == pred))
+
+    print("Goal satisfied true:", evaluate_goal(goal_node, final_true_facts, objects_by_type, {}))
     print("========== END GOAL DEBUG ==========\n")
     
     goal_true = evaluate_goal(goal_node, state_to_facts(final_true_state), objects_by_type, {})
@@ -803,6 +957,8 @@ def evaluate_file(path, args, llm_client, prompt_builder, totals):
         "raw_output": llm_output,
         "raw_output_original_ids": llm_output_for_eval,
         "alias_map": original_to_alias,
+        "mode": "json_goal_residual" if args.use_goal_residual else ("json" if args.use_json_state else "natural_language"),
+        "json_parse_errors": json_parse_errors,
     }
 
 
@@ -824,9 +980,11 @@ def parse_args():
     parser.add_argument("--provider", default=None, help="LLM provider for get_llm_client().")
     parser.add_argument("--max-examples", type=int, default=10)
     parser.add_argument("--temperature", type=float, default=0.0)
-    parser.add_argument("--max-tokens", type=int, default=15000)
-    parser.add_argument("--max-init-facts", type=int, default=500)
+    parser.add_argument("--max-tokens", type=int, default=25000)
+    parser.add_argument("--max-init-facts", type=int, default=999)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--use-json-state", action="store_true")
+    parser.add_argument("--use-goal-residual", action="store_true")
     return parser.parse_args()
 
 

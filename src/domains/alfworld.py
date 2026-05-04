@@ -299,6 +299,104 @@ class ALFWorldState:
                 facts.append(f"{obj_type} {obj} is {property_name}")
 
         return ", ".join(facts)
+
+    def to_json_dict(self):
+        """Return a compact JSON-serializable dynamic ALFWorld state.
+
+        This supports structured JSON state memoization. Static capabilities are
+        intentionally omitted from the JSON state so checkpoints stay compact.
+        """
+        agent = next(iter(self.at_location), "agent1")
+
+        return {
+            "agent": {
+                "id": agent,
+                "location": self.at_location.get(agent),
+                "holding": self.holds.get(agent),
+            },
+            "in_receptacle": dict(sorted(self.in_receptacle.items())),
+            "object_at_location": dict(sorted(self.object_at_location.items())),
+            "receptacle_at_location": dict(sorted(self.receptacle_at_location.items())),
+            "opened": sorted(self.opened),
+            "is_clean": sorted(self.is_clean),
+            "is_hot": sorted(self.is_hot),
+            "is_cool": sorted(self.is_cool),
+            "is_on": sorted(self.is_on),
+            "is_toggled": sorted(self.is_toggled),
+            "is_sliced": sorted(self.is_sliced),
+        }
+
+    def compute_goal_diff(self, goal_state):
+        """Split goal facts into satisfied and remaining lists.
+
+        This is the per-predicate version of is_goal_state(). It powers the
+        JSON + goal residual tracking condition.
+        """
+        satisfied = []
+        remaining = []
+
+        dict_fields = [
+            "at_location",
+            "receptacle_at_location",
+            "object_at_location",
+            "in_receptacle",
+            "in_receptacle_object",
+            "receptacle_type",
+            "object_type",
+            "holds",
+        ]
+        set_fields = [
+            "openable",
+            "opened",
+            "is_receptacle_object",
+            "is_receptacle_object_full",
+            "was_in_receptacle",
+            "can_contain",
+            "holds_any",
+            "holds_any_receptacle_object",
+            "full",
+            "is_clean",
+            "cleanable",
+            "is_hot",
+            "heatable",
+            "is_cool",
+            "coolable",
+            "pickupable",
+            "moveable",
+            "toggleable",
+            "is_on",
+            "is_toggled",
+            "sliceable",
+            "is_sliced",
+        ]
+
+        for field in dict_fields:
+            mine = getattr(self, field)
+            target = getattr(goal_state, field)
+            for key, value in sorted(target.items()):
+                label = f"{field}({key}, {value})"
+                if mine.get(key) == value:
+                    satisfied.append(label)
+                else:
+                    remaining.append(label)
+
+        for field in set_fields:
+            mine = getattr(self, field)
+            target = getattr(goal_state, field)
+            for item in sorted(target):
+                if isinstance(item, tuple):
+                    args = ", ".join(str(x) for x in item)
+                    label = f"{field}({args})"
+                else:
+                    label = f"{field}({item})"
+
+                if item in mine:
+                    satisfied.append(label)
+                else:
+                    remaining.append(label)
+
+        return satisfied, remaining
+
     
     @staticmethod
     def apply_action(current_state_description: str, action_description: str) -> str:
