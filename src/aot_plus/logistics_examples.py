@@ -1,403 +1,794 @@
 """
-Hardcoded few-shot examples for Logistics in JSON and JSON+goal-residual formats.
+Logistics few-shot examples in JSON format — matched to paper Appendix B.4.
 
-Every ACTION is immediately followed by exactly one STATE_JSON block so that
-Abby's positional alignment (block index == action index) is maintained.
-States are hand-traced against the simulator rules:
-  - drive-truck T src dst city  : T.at src → dst  (same city, any locations)
-  - load-truck P T loc          : P.at loc → null, P.in → T  (T.at == loc)
-  - unload-truck P T loc        : P.in T → null, P.at → loc  (T.at == loc)
-  - fly-airplane A src dst      : A.at src → dst  (both airports, different cities)
-  - load-airplane P A loc       : P.at loc → null, P.in → A  (A.at == loc, loc is airport)
-  - unload-airplane P A loc     : P.in A → null, P.at → loc  (A.at == loc, loc is airport)
+These are the SAME three problems used in the AoT+ paper (B.4 Examples 1-3),
+rewritten with JSON state representation (STATE_JSON blocks) instead of the
+paper's compact NL state summaries.  Reasoning text is kept verbatim from B.4.
+This enables a controlled comparison: only the state format differs.
 
-Airport convention: a location whose name ends with "-0" is an airport.
-City map used in both examples:
-  L0-0 → C0 (airport), L0-1 → C0, L0-2 → C0
-  L1-0 → C1 (airport), L1-1 → C1, L1-2 → C1
+City map:
+  Example 1/2: three cities  C0 (L0-x), C1 (L1-x), C2 (L2-x)
+  Example 3:   two cities    C0 (L0-x), C1 (L1-x)
+Airports are always Lx-0.
 """
 
 # ---------------------------------------------------------------------------
-# Example 1 — Intra-city delivery with one wrong move (backtracking)
+# Helper: compact JSON line builder (keeps lines readable)
+# ---------------------------------------------------------------------------
+
+def _s(at: dict, in_: dict) -> str:
+    """Render a canonical state as a compact single-line JSON string."""
+    import json
+    return json.dumps({"at": dict(sorted(at.items())),
+                       "in": dict(sorted(in_.items()))},
+                      separators=(", ", ": ")).replace('{"', '{"').replace('":', '": ')
+
+
+# ---------------------------------------------------------------------------
+# Example 1  (Paper B.4 Ex1)
+# 3 cities, 2 airplanes, 3 trucks, 6 packages, 28 actions
 #
-# Initial : P0 at L0-2, T0 at L0-1, A0 at L0-0
-# Goal    : P0 at L0-1
-#
-# State trace:
-#   S0  at={A0:L0-0, P0:L0-2, T0:L0-1}  in={P0:null}
-#   wrong: drive T0 to airport instead of to P0
-#   S1w at={A0:L0-0, P0:L0-2, T0:L0-0}  in={P0:null}
-#   undo: drive T0 back to L0-1
-#   S1u at={A0:L0-0, P0:L0-2, T0:L0-1}  in={P0:null}  ← back to S0
-#   a1: drive T0 from L0-1 to L0-2
-#   S2  at={A0:L0-0, P0:L0-2, T0:L0-2}  in={P0:null}
-#   a2: load P0 onto T0 at L0-2
-#   S3  at={A0:L0-0, P0:null, T0:L0-2}  in={P0:T0}
-#   a3: drive T0 from L0-2 to L0-1
-#   S4  at={A0:L0-0, P0:null, T0:L0-1}  in={P0:T0}
-#   a4: unload P0 from T0 at L0-1
-#   S5  at={A0:L0-0, P0:L0-1, T0:L0-1} in={P0:null}  ← GOAL
+# Initial:
+#   A0 at L1-0, A1 at L1-0
+#   T0 at L0-1, T1 at L1-0, T2 at L2-1
+#   P0 at L2-0, P1 at L2-1, P2 at L1-1, P3 at L0-0, P4 at L2-0, P5 at L2-0
+# Goal: P0@L2-0(noop), P1@L0-1, P2@L1-0, P3@L2-0, P4@L1-0, P5@L1-1
 # ---------------------------------------------------------------------------
 
 LOGISTICS_JSON_EXAMPLE_1 = """\
 Initial state (JSON):
-{"at": {"A0": "L0-0", "P0": "L0-2", "T0": "L0-1"}, "in": {"P0": null}}
+{"at": {"A0": "L1-0", "A1": "L1-0", "P0": "L2-0", "P1": "L2-1", "P2": "L1-1", "P3": "L0-0", "P4": "L2-0", "P5": "L2-0", "T0": "L0-1", "T1": "L1-0", "T2": "L2-1"}, "in": {"P0": null, "P1": null, "P2": null, "P3": null, "P4": null, "P5": null}}
 
 Goal state (JSON):
-{"at": {"P0": "L0-1"}, "in": {"P0": null}}
+{"at": {"P0": "L2-0", "P1": "L0-1", "P2": "L1-0", "P3": "L2-0", "P4": "L1-0", "P5": "L1-1"}, "in": {"P0": null, "P1": null, "P2": null, "P3": null, "P4": null, "P5": null}}
 
 STATE_JSON: ```json
-{"at": {"A0": "L0-0", "P0": "L0-2", "T0": "L0-1"}, "in": {"P0": null}}
+{"at": {"A0": "L1-0", "A1": "L1-0", "P0": "L2-0", "P1": "L2-1", "P2": "L1-1", "P3": "L0-0", "P4": "L2-0", "P5": "L2-0", "T0": "L0-1", "T1": "L1-0", "T2": "L2-1"}, "in": {"P0": null, "P1": null, "P2": null, "P3": null, "P4": null, "P5": null}}
 ```
 
-I need to deliver P0 from L0-2 to L0-1 using T0.
+There are three cities since only locations talked about are L0, L1 and L2. We have two airplanes A0 and A1, and are both in L1-0. Let's first examine which packages need to moved to other cities.
 
-Let me first try driving the truck toward the airport — wait, that is the wrong direction.
+P0: L2 -> L2 (no)
+P1: L2 -> L0 (yes)
+P2: L1 -> L1 (no)
+P3: L0 -> L2 (yes)
+P4: L2 -> L1 (yes)
+P5: L2 -> L1 (yes)
+
+The packages P0 and P2 only need to moved within the city, and P1, P3, P4 and P5 will need to be transferred via planes to other cities. Let's sort out the within city ones first. P0 needs to be moved from L2-0 to L2-0, so no moves are necessary there. P2 should be moved from L1-1 to L1-0. The truck at C1 is T1 at L1-0, so it needs to go to L1-1 first and go to L1-0 after loading the package.
+
+1. Drive-truck T1 at L1-0 to L1-1 in C1
+
+ACTION: drive-truck T1 L1-0 L1-1 C1
+STATE_JSON: ```json
+{"at": {"A0": "L1-0", "A1": "L1-0", "P0": "L2-0", "P1": "L2-1", "P2": "L1-1", "P3": "L0-0", "P4": "L2-0", "P5": "L2-0", "T0": "L0-1", "T1": "L1-1", "T2": "L2-1"}, "in": {"P0": null, "P1": null, "P2": null, "P3": null, "P4": null, "P5": null}}
+```
+
+2. Load-truck P2 to T1 at L1-1
+
+ACTION: load-truck P2 T1 L1-1
+STATE_JSON: ```json
+{"at": {"A0": "L1-0", "A1": "L1-0", "P0": "L2-0", "P1": "L2-1", "P2": null, "P3": "L0-0", "P4": "L2-0", "P5": "L2-0", "T0": "L0-1", "T1": "L1-1", "T2": "L2-1"}, "in": {"P0": null, "P1": null, "P2": "T1", "P3": null, "P4": null, "P5": null}}
+```
+
+3. Drive-truck T1 at L1-1 to L1-0 in C1
+
+ACTION: drive-truck T1 L1-1 L1-0 C1
+STATE_JSON: ```json
+{"at": {"A0": "L1-0", "A1": "L1-0", "P0": "L2-0", "P1": "L2-1", "P2": null, "P3": "L0-0", "P4": "L2-0", "P5": "L2-0", "T0": "L0-1", "T1": "L1-0", "T2": "L2-1"}, "in": {"P0": null, "P1": null, "P2": "T1", "P3": null, "P4": null, "P5": null}}
+```
+
+4. Unload-truck P2 from T1 at L1-0
+
+ACTION: unload-truck P2 T1 L1-0
+STATE_JSON: ```json
+{"at": {"A0": "L1-0", "A1": "L1-0", "P0": "L2-0", "P1": "L2-1", "P2": "L1-0", "P3": "L0-0", "P4": "L2-0", "P5": "L2-0", "T0": "L0-1", "T1": "L1-0", "T2": "L2-1"}, "in": {"P0": null, "P1": null, "P2": null, "P3": null, "P4": null, "P5": null}}
+```
+
+Now we are finished with intra-city transports and are left with the packages P1, P3, P4 and P5. Let's transfer P1 first. P1 needs to go from L2-1 to L0-1. Both locations are not airports so we need to first use a truck to carry it from L2-1 to L2-0 and then airplane to take it to L0-0, then finally another truck to take it from L0-0 to L0-1. The truck in L2 is T2 and it is in L2-1. So we can directly load it to take it to L2-0. The airplanes are in L1-0, so one of them (let's say A0) needs to fly to L2-0. The truck in C0 is T0 and it is in L0-1 so it also needs to go to L0-0 to be loaded with P1.
+
+5. Load-truck P1 to T2 at L2-1
+
+ACTION: load-truck P1 T2 L2-1
+STATE_JSON: ```json
+{"at": {"A0": "L1-0", "A1": "L1-0", "P0": "L2-0", "P1": null, "P2": "L1-0", "P3": "L0-0", "P4": "L2-0", "P5": "L2-0", "T0": "L0-1", "T1": "L1-0", "T2": "L2-1"}, "in": {"P0": null, "P1": "T2", "P2": null, "P3": null, "P4": null, "P5": null}}
+```
+
+6. Drive-truck T2 from L2-1 to L2-0 in C2
+
+ACTION: drive-truck T2 L2-1 L2-0 C2
+STATE_JSON: ```json
+{"at": {"A0": "L1-0", "A1": "L1-0", "P0": "L2-0", "P1": null, "P2": "L1-0", "P3": "L0-0", "P4": "L2-0", "P5": "L2-0", "T0": "L0-1", "T1": "L1-0", "T2": "L2-0"}, "in": {"P0": null, "P1": "T2", "P2": null, "P3": null, "P4": null, "P5": null}}
+```
+
+7. Unload-truck P1 from T2 at L2-0
+
+ACTION: unload-truck P1 T2 L2-0
+STATE_JSON: ```json
+{"at": {"A0": "L1-0", "A1": "L1-0", "P0": "L2-0", "P1": "L2-0", "P2": "L1-0", "P3": "L0-0", "P4": "L2-0", "P5": "L2-0", "T0": "L0-1", "T1": "L1-0", "T2": "L2-0"}, "in": {"P0": null, "P1": null, "P2": null, "P3": null, "P4": null, "P5": null}}
+```
+
+8. Fly-airplane A0 L1-0 to L2-0
+
+ACTION: fly-airplane A0 L1-0 L2-0
+STATE_JSON: ```json
+{"at": {"A0": "L2-0", "A1": "L1-0", "P0": "L2-0", "P1": "L2-0", "P2": "L1-0", "P3": "L0-0", "P4": "L2-0", "P5": "L2-0", "T0": "L0-1", "T1": "L1-0", "T2": "L2-0"}, "in": {"P0": null, "P1": null, "P2": null, "P3": null, "P4": null, "P5": null}}
+```
+
+9. Load-airplane P1 to A0 at L2-0
+
+ACTION: load-airplane P1 A0 L2-0
+STATE_JSON: ```json
+{"at": {"A0": "L2-0", "A1": "L1-0", "P0": "L2-0", "P1": null, "P2": "L1-0", "P3": "L0-0", "P4": "L2-0", "P5": "L2-0", "T0": "L0-1", "T1": "L1-0", "T2": "L2-0"}, "in": {"P0": null, "P1": "A0", "P2": null, "P3": null, "P4": null, "P5": null}}
+```
+
+10. Fly-airplane A0 from L2-0 to L0-0
+
+ACTION: fly-airplane A0 L2-0 L0-0
+STATE_JSON: ```json
+{"at": {"A0": "L0-0", "A1": "L1-0", "P0": "L2-0", "P1": null, "P2": "L1-0", "P3": "L0-0", "P4": "L2-0", "P5": "L2-0", "T0": "L0-1", "T1": "L1-0", "T2": "L2-0"}, "in": {"P0": null, "P1": "A0", "P2": null, "P3": null, "P4": null, "P5": null}}
+```
+
+11. Unload-airplane P1 from A0 at L0-0
+
+ACTION: unload-airplane P1 A0 L0-0
+STATE_JSON: ```json
+{"at": {"A0": "L0-0", "A1": "L1-0", "P0": "L2-0", "P1": "L0-0", "P2": "L1-0", "P3": "L0-0", "P4": "L2-0", "P5": "L2-0", "T0": "L0-1", "T1": "L1-0", "T2": "L2-0"}, "in": {"P0": null, "P1": null, "P2": null, "P3": null, "P4": null, "P5": null}}
+```
+
+12. Drive-truck T0 from L0-1 to L0-0 in C0
 
 ACTION: drive-truck T0 L0-1 L0-0 C0
 STATE_JSON: ```json
-{"at": {"A0": "L0-0", "P0": "L0-2", "T0": "L0-0"}, "in": {"P0": null}}
+{"at": {"A0": "L0-0", "A1": "L1-0", "P0": "L2-0", "P1": "L0-0", "P2": "L1-0", "P3": "L0-0", "P4": "L2-0", "P5": "L2-0", "T0": "L0-0", "T1": "L1-0", "T2": "L2-0"}, "in": {"P0": null, "P1": null, "P2": null, "P3": null, "P4": null, "P5": null}}
 ```
 
-T0 is now at the airport but P0 is still at L0-2. I need T0 at L0-2, so let me backtrack.
+13. Load-truck P1 to T0 at L0-0
+
+ACTION: load-truck P1 T0 L0-0
+STATE_JSON: ```json
+{"at": {"A0": "L0-0", "A1": "L1-0", "P0": "L2-0", "P1": null, "P2": "L1-0", "P3": "L0-0", "P4": "L2-0", "P5": "L2-0", "T0": "L0-0", "T1": "L1-0", "T2": "L2-0"}, "in": {"P0": null, "P1": "T0", "P2": null, "P3": null, "P4": null, "P5": null}}
+```
+
+14. Drive-truck T0 from L0-0 to L0-1 in C0
 
 ACTION: drive-truck T0 L0-0 L0-1 C0
 STATE_JSON: ```json
-{"at": {"A0": "L0-0", "P0": "L0-2", "T0": "L0-1"}, "in": {"P0": null}}
+{"at": {"A0": "L0-0", "A1": "L1-0", "P0": "L2-0", "P1": null, "P2": "L1-0", "P3": "L0-0", "P4": "L2-0", "P5": "L2-0", "T0": "L0-1", "T1": "L1-0", "T2": "L2-0"}, "in": {"P0": null, "P1": "T0", "P2": null, "P3": null, "P4": null, "P5": null}}
 ```
 
-Back to the start. The correct move is to drive T0 directly to L0-2 where P0 is.
+15. Unload-truck P1 from T0 at L0-1
 
-ACTION: drive-truck T0 L0-1 L0-2 C0
+ACTION: unload-truck P1 T0 L0-1
 STATE_JSON: ```json
-{"at": {"A0": "L0-0", "P0": "L0-2", "T0": "L0-2"}, "in": {"P0": null}}
+{"at": {"A0": "L0-0", "A1": "L1-0", "P0": "L2-0", "P1": "L0-1", "P2": "L1-0", "P3": "L0-0", "P4": "L2-0", "P5": "L2-0", "T0": "L0-1", "T1": "L1-0", "T2": "L2-0"}, "in": {"P0": null, "P1": null, "P2": null, "P3": null, "P4": null, "P5": null}}
 ```
 
-T0 and P0 are both at L0-2. Load P0.
+Now, let's continue with P3. P3 needs to go from L0-0 to L2-0. The airplane A0 is already at L0-0, so we can directly load it to take it to L2-0 which is the final destination.
 
-ACTION: load-truck P0 T0 L0-2
+16. Load-airplane P3 to A0 at L0-0
+
+ACTION: load-airplane P3 A0 L0-0
 STATE_JSON: ```json
-{"at": {"A0": "L0-0", "P0": null, "T0": "L0-2"}, "in": {"P0": "T0"}}
+{"at": {"A0": "L0-0", "A1": "L1-0", "P0": "L2-0", "P1": "L0-1", "P2": "L1-0", "P3": null, "P4": "L2-0", "P5": "L2-0", "T0": "L0-1", "T1": "L1-0", "T2": "L2-0"}, "in": {"P0": null, "P1": null, "P2": null, "P3": "A0", "P4": null, "P5": null}}
 ```
 
-P0 is on T0. Drive to the goal location L0-1.
+17. Fly-airplane A0 from L0-0 to L2-0
 
-ACTION: drive-truck T0 L0-2 L0-1 C0
+ACTION: fly-airplane A0 L0-0 L2-0
 STATE_JSON: ```json
-{"at": {"A0": "L0-0", "P0": null, "T0": "L0-1"}, "in": {"P0": "T0"}}
+{"at": {"A0": "L2-0", "A1": "L1-0", "P0": "L2-0", "P1": "L0-1", "P2": "L1-0", "P3": null, "P4": "L2-0", "P5": "L2-0", "T0": "L0-1", "T1": "L1-0", "T2": "L2-0"}, "in": {"P0": null, "P1": null, "P2": null, "P3": "A0", "P4": null, "P5": null}}
 ```
 
-Unload P0 at L0-1 — the goal.
+18. Unload-airplane P3 from A0 at L2-0
 
-ACTION: unload-truck P0 T0 L0-1
+ACTION: unload-airplane P3 A0 L2-0
 STATE_JSON: ```json
-{"at": {"A0": "L0-0", "P0": "L0-1", "T0": "L0-1"}, "in": {"P0": null}}
+{"at": {"A0": "L2-0", "A1": "L1-0", "P0": "L2-0", "P1": "L0-1", "P2": "L1-0", "P3": "L2-0", "P4": "L2-0", "P5": "L2-0", "T0": "L0-1", "T1": "L1-0", "T2": "L2-0"}, "in": {"P0": null, "P1": null, "P2": null, "P3": null, "P4": null, "P5": null}}
 ```
 
-Goal reached: P0 is at L0-1.
+Now, let's continue with P4. P4 needs to go from L2-0 to L1-0. The airplane A0 is already at L2-0, so we can directly load it to take it to L1-0 which is the final destination.
+
+19. Load-airplane P4 to A0 at L2-0
+
+ACTION: load-airplane P4 A0 L2-0
+STATE_JSON: ```json
+{"at": {"A0": "L2-0", "A1": "L1-0", "P0": "L2-0", "P1": "L0-1", "P2": "L1-0", "P3": "L2-0", "P4": null, "P5": "L2-0", "T0": "L0-1", "T1": "L1-0", "T2": "L2-0"}, "in": {"P0": null, "P1": null, "P2": null, "P3": null, "P4": "A0", "P5": null}}
+```
+
+20. Fly-airplane A0 from L2-0 to L1-0
+
+ACTION: fly-airplane A0 L2-0 L1-0
+STATE_JSON: ```json
+{"at": {"A0": "L1-0", "A1": "L1-0", "P0": "L2-0", "P1": "L0-1", "P2": "L1-0", "P3": "L2-0", "P4": null, "P5": "L2-0", "T0": "L0-1", "T1": "L1-0", "T2": "L2-0"}, "in": {"P0": null, "P1": null, "P2": null, "P3": null, "P4": "A0", "P5": null}}
+```
+
+21. Unload-airplane P4 from A0 at L1-0
+
+ACTION: unload-airplane P4 A0 L1-0
+STATE_JSON: ```json
+{"at": {"A0": "L1-0", "A1": "L1-0", "P0": "L2-0", "P1": "L0-1", "P2": "L1-0", "P3": "L2-0", "P4": "L1-0", "P5": "L2-0", "T0": "L0-1", "T1": "L1-0", "T2": "L2-0"}, "in": {"P0": null, "P1": null, "P2": null, "P3": null, "P4": null, "P5": null}}
+```
+
+Finally, let's move P5. P5 needs to go from L2-0 to L1-1. The airplane A0 is at L1-0, so we need to fly it to L2-0 to load P5. Then, we need to fly it back to L1-0 and use the truck T1 to take it to L1-1. The truck in C1 is at L1-0, so it can directly be used to take P5 to the final destination L1-1.
+
+22. Fly-airplane A0 from L1-0 to L2-0
+
+ACTION: fly-airplane A0 L1-0 L2-0
+STATE_JSON: ```json
+{"at": {"A0": "L2-0", "A1": "L1-0", "P0": "L2-0", "P1": "L0-1", "P2": "L1-0", "P3": "L2-0", "P4": "L1-0", "P5": "L2-0", "T0": "L0-1", "T1": "L1-0", "T2": "L2-0"}, "in": {"P0": null, "P1": null, "P2": null, "P3": null, "P4": null, "P5": null}}
+```
+
+23. Load-airplane P5 to A0 at L2-0
+
+ACTION: load-airplane P5 A0 L2-0
+STATE_JSON: ```json
+{"at": {"A0": "L2-0", "A1": "L1-0", "P0": "L2-0", "P1": "L0-1", "P2": "L1-0", "P3": "L2-0", "P4": "L1-0", "P5": null, "T0": "L0-1", "T1": "L1-0", "T2": "L2-0"}, "in": {"P0": null, "P1": null, "P2": null, "P3": null, "P4": null, "P5": "A0"}}
+```
+
+24. Fly-airplane A0 from L2-0 to L1-0
+
+ACTION: fly-airplane A0 L2-0 L1-0
+STATE_JSON: ```json
+{"at": {"A0": "L1-0", "A1": "L1-0", "P0": "L2-0", "P1": "L0-1", "P2": "L1-0", "P3": "L2-0", "P4": "L1-0", "P5": null, "T0": "L0-1", "T1": "L1-0", "T2": "L2-0"}, "in": {"P0": null, "P1": null, "P2": null, "P3": null, "P4": null, "P5": "A0"}}
+```
+
+25. Unload-airplane P5 from A0 at L1-0
+
+ACTION: unload-airplane P5 A0 L1-0
+STATE_JSON: ```json
+{"at": {"A0": "L1-0", "A1": "L1-0", "P0": "L2-0", "P1": "L0-1", "P2": "L1-0", "P3": "L2-0", "P4": "L1-0", "P5": "L1-0", "T0": "L0-1", "T1": "L1-0", "T2": "L2-0"}, "in": {"P0": null, "P1": null, "P2": null, "P3": null, "P4": null, "P5": null}}
+```
+
+26. Load-truck P5 to T1 at L1-0
+
+ACTION: load-truck P5 T1 L1-0
+STATE_JSON: ```json
+{"at": {"A0": "L1-0", "A1": "L1-0", "P0": "L2-0", "P1": "L0-1", "P2": "L1-0", "P3": "L2-0", "P4": "L1-0", "P5": null, "T0": "L0-1", "T1": "L1-0", "T2": "L2-0"}, "in": {"P0": null, "P1": null, "P2": null, "P3": null, "P4": null, "P5": "T1"}}
+```
+
+27. Drive-truck T1 from L1-0 to L1-1 in C1
+
+ACTION: drive-truck T1 L1-0 L1-1 C1
+STATE_JSON: ```json
+{"at": {"A0": "L1-0", "A1": "L1-0", "P0": "L2-0", "P1": "L0-1", "P2": "L1-0", "P3": "L2-0", "P4": "L1-0", "P5": null, "T0": "L0-1", "T1": "L1-1", "T2": "L2-0"}, "in": {"P0": null, "P1": null, "P2": null, "P3": null, "P4": null, "P5": "T1"}}
+```
+
+28. Unload-truck P5 from T1 at L1-1
+
+ACTION: unload-truck P5 T1 L1-1
+STATE_JSON: ```json
+{"at": {"A0": "L1-0", "A1": "L1-0", "P0": "L2-0", "P1": "L0-1", "P2": "L1-0", "P3": "L2-0", "P4": "L1-0", "P5": "L1-1", "T0": "L0-1", "T1": "L1-1", "T2": "L2-0"}, "in": {"P0": null, "P1": null, "P2": null, "P3": null, "P4": null, "P5": null}}
+```
+
+All packages are at their goal locations.
 
 Plan summary:
-1. drive-truck T0 L0-1 L0-2 C0
-2. load-truck P0 T0 L0-2
-3. drive-truck T0 L0-2 L0-1 C0
-4. unload-truck P0 T0 L0-1\
-"""
+1. drive-truck T1 L1-0 L1-1 C1
+2. load-truck P2 T1 L1-1
+3. drive-truck T1 L1-1 L1-0 C1
+4. unload-truck P2 T1 L1-0
+5. load-truck P1 T2 L2-1
+6. drive-truck T2 L2-1 L2-0 C2
+7. unload-truck P1 T2 L2-0
+8. fly-airplane A0 L1-0 L2-0
+9. load-airplane P1 A0 L2-0
+10. fly-airplane A0 L2-0 L0-0
+11. unload-airplane P1 A0 L0-0
+12. drive-truck T0 L0-1 L0-0 C0
+13. load-truck P1 T0 L0-0
+14. drive-truck T0 L0-0 L0-1 C0
+15. unload-truck P1 T0 L0-1
+16. load-airplane P3 A0 L0-0
+17. fly-airplane A0 L0-0 L2-0
+18. unload-airplane P3 A0 L2-0
+19. load-airplane P4 A0 L2-0
+20. fly-airplane A0 L2-0 L1-0
+21. unload-airplane P4 A0 L1-0
+22. fly-airplane A0 L1-0 L2-0
+23. load-airplane P5 A0 L2-0
+24. fly-airplane A0 L2-0 L1-0
+25. unload-airplane P5 A0 L1-0
+26. load-truck P5 T1 L1-0
+27. drive-truck T1 L1-0 L1-1 C1
+28. unload-truck P5 T1 L1-1"""
+
 
 # ---------------------------------------------------------------------------
-# Example 2 — Cross-city delivery (clean, no backtracking)
+# Example 2  (Paper B.4 Ex2)
+# 3 cities, 2 airplanes, 3 trucks, 5 packages, 21 actions
 #
-# Initial : P0 at L0-1, T0 at L0-2, T1 at L1-2, A0 at L0-0
-# Goal    : P0 at L1-1
-#
-# State trace:
-#   S0   at={A0:L0-0, P0:L0-1, T0:L0-2, T1:L1-2}  in={P0:null}
-#   a1: drive T0 L0-2 → L0-1
-#   S1   at={A0:L0-0, P0:L0-1, T0:L0-1, T1:L1-2}  in={P0:null}
-#   a2: load P0 onto T0 at L0-1
-#   S2   at={A0:L0-0, P0:null, T0:L0-1, T1:L1-2}  in={P0:T0}
-#   a3: drive T0 L0-1 → L0-0 (airport)
-#   S3   at={A0:L0-0, P0:null, T0:L0-0, T1:L1-2}  in={P0:T0}
-#   a4: unload P0 at L0-0
-#   S4   at={A0:L0-0, P0:L0-0, T0:L0-0, T1:L1-2}  in={P0:null}
-#   a5: load P0 onto A0 at L0-0
-#   S5   at={A0:L0-0, P0:null, T0:L0-0, T1:L1-2}  in={P0:A0}
-#   a6: fly A0 L0-0 → L1-0
-#   S6   at={A0:L1-0, P0:null, T0:L0-0, T1:L1-2}  in={P0:A0}
-#   a7: unload P0 at L1-0
-#   S7   at={A0:L1-0, P0:L1-0, T0:L0-0, T1:L1-2}  in={P0:null}
-#   a8: drive T1 L1-2 → L1-0
-#   S8   at={A0:L1-0, P0:L1-0, T0:L0-0, T1:L1-0}  in={P0:null}
-#   a9: load P0 onto T1 at L1-0
-#   S9   at={A0:L1-0, P0:null, T0:L0-0, T1:L1-0}  in={P0:T1}
-#   a10: drive T1 L1-0 → L1-1
-#   S10  at={A0:L1-0, P0:null, T0:L0-0, T1:L1-1}  in={P0:T1}
-#   a11: unload P0 at L1-1
-#   S11  at={A0:L1-0, P0:L1-1, T0:L0-0, T1:L1-1}  in={P0:null}  ← GOAL
+# Initial:
+#   A0 at L2-0, A1 at L2-0
+#   T0 at L0-0, T1 at L1-0, T2 at L2-0
+#   P0 at L0-0, P1 at L2-0, P2 at L2-0, P3 at L1-2, P4 at L0-0
+# Goal: P0@L0-0(noop), P1@L0-0, P2@L2-0(noop), P3@L2-1, P4@L2-2
 # ---------------------------------------------------------------------------
 
 LOGISTICS_JSON_EXAMPLE_2 = """\
 Initial state (JSON):
-{"at": {"A0": "L0-0", "P0": "L0-1", "T0": "L0-2", "T1": "L1-2"}, "in": {"P0": null}}
+{"at": {"A0": "L2-0", "A1": "L2-0", "P0": "L0-0", "P1": "L2-0", "P2": "L2-0", "P3": "L1-2", "P4": "L0-0", "T0": "L0-0", "T1": "L1-0", "T2": "L2-0"}, "in": {"P0": null, "P1": null, "P2": null, "P3": null, "P4": null}}
 
 Goal state (JSON):
-{"at": {"P0": "L1-1"}, "in": {"P0": null}}
+{"at": {"P0": "L0-0", "P1": "L0-0", "P2": "L2-0", "P3": "L2-1", "P4": "L2-2"}, "in": {"P0": null, "P1": null, "P2": null, "P3": null, "P4": null}}
 
 STATE_JSON: ```json
-{"at": {"A0": "L0-0", "P0": "L0-1", "T0": "L0-2", "T1": "L1-2"}, "in": {"P0": null}}
+{"at": {"A0": "L2-0", "A1": "L2-0", "P0": "L0-0", "P1": "L2-0", "P2": "L2-0", "P3": "L1-2", "P4": "L0-0", "T0": "L0-0", "T1": "L1-0", "T2": "L2-0"}, "in": {"P0": null, "P1": null, "P2": null, "P3": null, "P4": null}}
 ```
 
-P0 must travel from city C0 (L0-1) to city C1 (L1-1). Plan: truck T0 carries P0 to C0 airport, airplane A0 flies it to C1 airport, truck T1 delivers it to L1-1.
+There are three cities since only locations talked about are L0, L1 and L2. We have two airplanes A0 and A1, and both are in L2-0. Let's first examine which packages need to moved to other cities.
 
-Drive T0 to L0-1 where P0 is waiting.
+P0: L0 -> L0 (no)
+P1: L2 -> L0 (yes)
+P2: L2 -> L2 (no)
+P3: L1 -> L2 (yes)
+P4: L0 -> L2 (yes)
 
-ACTION: drive-truck T0 L0-2 L0-1 C0
+The packages P0 and P2 do not need to move. P1 needs to go from L2-0 to L0-0. Both are airports so A0 can directly fly P1 there. We should also start moving T1 toward P3 at L1-2 at the same time.
+
+1. Load-airplane P1 to A0 at L2-0
+
+ACTION: load-airplane P1 A0 L2-0
 STATE_JSON: ```json
-{"at": {"A0": "L0-0", "P0": "L0-1", "T0": "L0-1", "T1": "L1-2"}, "in": {"P0": null}}
+{"at": {"A0": "L2-0", "A1": "L2-0", "P0": "L0-0", "P1": null, "P2": "L2-0", "P3": "L1-2", "P4": "L0-0", "T0": "L0-0", "T1": "L1-0", "T2": "L2-0"}, "in": {"P0": null, "P1": "A0", "P2": null, "P3": null, "P4": null}}
 ```
 
-Load P0 onto T0.
+2. Fly-airplane A0 from L2-0 to L0-0
 
-ACTION: load-truck P0 T0 L0-1
+ACTION: fly-airplane A0 L2-0 L0-0
 STATE_JSON: ```json
-{"at": {"A0": "L0-0", "P0": null, "T0": "L0-1", "T1": "L1-2"}, "in": {"P0": "T0"}}
+{"at": {"A0": "L0-0", "A1": "L2-0", "P0": "L0-0", "P1": null, "P2": "L2-0", "P3": "L1-2", "P4": "L0-0", "T0": "L0-0", "T1": "L1-0", "T2": "L2-0"}, "in": {"P0": null, "P1": "A0", "P2": null, "P3": null, "P4": null}}
 ```
 
-Drive T0 with P0 to the C0 airport (L0-0).
+3. Unload-airplane P1 from A0 at L0-0
 
-ACTION: drive-truck T0 L0-1 L0-0 C0
+ACTION: unload-airplane P1 A0 L0-0
 STATE_JSON: ```json
-{"at": {"A0": "L0-0", "P0": null, "T0": "L0-0", "T1": "L1-2"}, "in": {"P0": "T0"}}
+{"at": {"A0": "L0-0", "A1": "L2-0", "P0": "L0-0", "P1": "L0-0", "P2": "L2-0", "P3": "L1-2", "P4": "L0-0", "T0": "L0-0", "T1": "L1-0", "T2": "L2-0"}, "in": {"P0": null, "P1": null, "P2": null, "P3": null, "P4": null}}
 ```
 
-Unload P0 at the airport so it can be loaded onto the airplane.
+4. Drive-truck T1 from L1-0 to L1-2 in C1
 
-ACTION: unload-truck P0 T0 L0-0
+ACTION: drive-truck T1 L1-0 L1-2 C1
 STATE_JSON: ```json
-{"at": {"A0": "L0-0", "P0": "L0-0", "T0": "L0-0", "T1": "L1-2"}, "in": {"P0": null}}
+{"at": {"A0": "L0-0", "A1": "L2-0", "P0": "L0-0", "P1": "L0-0", "P2": "L2-0", "P3": "L1-2", "P4": "L0-0", "T0": "L0-0", "T1": "L1-2", "T2": "L2-0"}, "in": {"P0": null, "P1": null, "P2": null, "P3": null, "P4": null}}
 ```
 
-Load P0 onto airplane A0 at L0-0.
+Now, let's continue with P3. P3 needs to go from L1-2 to L2-1. The truck T1 is now at L1-2 with P3. We need to bring P3 to L1-0 first, then fly it to L2-0 via airplane A1, then use truck T2 to deliver it to L2-1. Airplane A1 is at L2-0, so it needs to fly to L1-0. Truck T2 is at L2-0.
 
-ACTION: load-airplane P0 A0 L0-0
+5. Load-truck P3 to T1 at L1-2
+
+ACTION: load-truck P3 T1 L1-2
 STATE_JSON: ```json
-{"at": {"A0": "L0-0", "P0": null, "T0": "L0-0", "T1": "L1-2"}, "in": {"P0": "A0"}}
+{"at": {"A0": "L0-0", "A1": "L2-0", "P0": "L0-0", "P1": "L0-0", "P2": "L2-0", "P3": null, "P4": "L0-0", "T0": "L0-0", "T1": "L1-2", "T2": "L2-0"}, "in": {"P0": null, "P1": null, "P2": null, "P3": "T1", "P4": null}}
 ```
 
-Fly A0 from C0 airport to C1 airport.
-
-ACTION: fly-airplane A0 L0-0 L1-0
-STATE_JSON: ```json
-{"at": {"A0": "L1-0", "P0": null, "T0": "L0-0", "T1": "L1-2"}, "in": {"P0": "A0"}}
-```
-
-Unload P0 at C1 airport (L1-0).
-
-ACTION: unload-airplane P0 A0 L1-0
-STATE_JSON: ```json
-{"at": {"A0": "L1-0", "P0": "L1-0", "T0": "L0-0", "T1": "L1-2"}, "in": {"P0": null}}
-```
-
-Drive T1 from L1-2 to the airport to pick up P0.
+6. Drive-truck T1 from L1-2 to L1-0 in C1
 
 ACTION: drive-truck T1 L1-2 L1-0 C1
 STATE_JSON: ```json
-{"at": {"A0": "L1-0", "P0": "L1-0", "T0": "L0-0", "T1": "L1-0"}, "in": {"P0": null}}
+{"at": {"A0": "L0-0", "A1": "L2-0", "P0": "L0-0", "P1": "L0-0", "P2": "L2-0", "P3": null, "P4": "L0-0", "T0": "L0-0", "T1": "L1-0", "T2": "L2-0"}, "in": {"P0": null, "P1": null, "P2": null, "P3": "T1", "P4": null}}
 ```
 
-Load P0 onto T1 at L1-0.
+7. Unload-truck P3 from T1 at L1-0
 
-ACTION: load-truck P0 T1 L1-0
+ACTION: unload-truck P3 T1 L1-0
 STATE_JSON: ```json
-{"at": {"A0": "L1-0", "P0": null, "T0": "L0-0", "T1": "L1-0"}, "in": {"P0": "T1"}}
+{"at": {"A0": "L0-0", "A1": "L2-0", "P0": "L0-0", "P1": "L0-0", "P2": "L2-0", "P3": "L1-0", "P4": "L0-0", "T0": "L0-0", "T1": "L1-0", "T2": "L2-0"}, "in": {"P0": null, "P1": null, "P2": null, "P3": null, "P4": null}}
 ```
 
-Drive T1 with P0 to the destination L1-1.
+8. Fly-airplane A1 from L2-0 to L1-0
 
-ACTION: drive-truck T1 L1-0 L1-1 C1
+ACTION: fly-airplane A1 L2-0 L1-0
 STATE_JSON: ```json
-{"at": {"A0": "L1-0", "P0": null, "T0": "L0-0", "T1": "L1-1"}, "in": {"P0": "T1"}}
+{"at": {"A0": "L0-0", "A1": "L1-0", "P0": "L0-0", "P1": "L0-0", "P2": "L2-0", "P3": "L1-0", "P4": "L0-0", "T0": "L0-0", "T1": "L1-0", "T2": "L2-0"}, "in": {"P0": null, "P1": null, "P2": null, "P3": null, "P4": null}}
 ```
 
-Unload P0 at L1-1 — the goal.
+9. Load-airplane P3 to A1 at L1-0
 
-ACTION: unload-truck P0 T1 L1-1
+ACTION: load-airplane P3 A1 L1-0
 STATE_JSON: ```json
-{"at": {"A0": "L1-0", "P0": "L1-1", "T0": "L0-0", "T1": "L1-1"}, "in": {"P0": null}}
+{"at": {"A0": "L0-0", "A1": "L1-0", "P0": "L0-0", "P1": "L0-0", "P2": "L2-0", "P3": null, "P4": "L0-0", "T0": "L0-0", "T1": "L1-0", "T2": "L2-0"}, "in": {"P0": null, "P1": null, "P2": null, "P3": "A1", "P4": null}}
 ```
 
-Goal reached: P0 is at L1-1.
+10. Fly-airplane A1 from L1-0 to L2-0
+
+ACTION: fly-airplane A1 L1-0 L2-0
+STATE_JSON: ```json
+{"at": {"A0": "L0-0", "A1": "L2-0", "P0": "L0-0", "P1": "L0-0", "P2": "L2-0", "P3": null, "P4": "L0-0", "T0": "L0-0", "T1": "L1-0", "T2": "L2-0"}, "in": {"P0": null, "P1": null, "P2": null, "P3": "A1", "P4": null}}
+```
+
+11. Unload-airplane P3 from A1 at L2-0
+
+ACTION: unload-airplane P3 A1 L2-0
+STATE_JSON: ```json
+{"at": {"A0": "L0-0", "A1": "L2-0", "P0": "L0-0", "P1": "L0-0", "P2": "L2-0", "P3": "L2-0", "P4": "L0-0", "T0": "L0-0", "T1": "L1-0", "T2": "L2-0"}, "in": {"P0": null, "P1": null, "P2": null, "P3": null, "P4": null}}
+```
+
+12. Load-truck P3 to T2 at L2-0
+
+ACTION: load-truck P3 T2 L2-0
+STATE_JSON: ```json
+{"at": {"A0": "L0-0", "A1": "L2-0", "P0": "L0-0", "P1": "L0-0", "P2": "L2-0", "P3": null, "P4": "L0-0", "T0": "L0-0", "T1": "L1-0", "T2": "L2-0"}, "in": {"P0": null, "P1": null, "P2": null, "P3": "T2", "P4": null}}
+```
+
+13. Drive-truck T2 from L2-0 to L2-1 in C2
+
+ACTION: drive-truck T2 L2-0 L2-1 C2
+STATE_JSON: ```json
+{"at": {"A0": "L0-0", "A1": "L2-0", "P0": "L0-0", "P1": "L0-0", "P2": "L2-0", "P3": null, "P4": "L0-0", "T0": "L0-0", "T1": "L1-0", "T2": "L2-1"}, "in": {"P0": null, "P1": null, "P2": null, "P3": "T2", "P4": null}}
+```
+
+14. Unload-truck P3 from T2 at L2-1
+
+ACTION: unload-truck P3 T2 L2-1
+STATE_JSON: ```json
+{"at": {"A0": "L0-0", "A1": "L2-0", "P0": "L0-0", "P1": "L0-0", "P2": "L2-0", "P3": "L2-1", "P4": "L0-0", "T0": "L0-0", "T1": "L1-0", "T2": "L2-1"}, "in": {"P0": null, "P1": null, "P2": null, "P3": null, "P4": null}}
+```
+
+Finally, let's move P4. P4 needs to go from L0-0 to L2-2. The airplane A0 is already at L0-0, so we can directly load it to take it to L2-0. Then, we need to use the truck T2 to take it from L2-0 to L2-2. The truck in C2 is at L2-1, so it needs to go to L2-0 to be loaded with P4 to take it to the final destination L2-2.
+
+15. Load-airplane P4 to A0 at L0-0
+
+ACTION: load-airplane P4 A0 L0-0
+STATE_JSON: ```json
+{"at": {"A0": "L0-0", "A1": "L2-0", "P0": "L0-0", "P1": "L0-0", "P2": "L2-0", "P3": "L2-1", "P4": null, "T0": "L0-0", "T1": "L1-0", "T2": "L2-1"}, "in": {"P0": null, "P1": null, "P2": null, "P3": null, "P4": "A0"}}
+```
+
+16. Fly-airplane A0 from L0-0 to L2-0
+
+ACTION: fly-airplane A0 L0-0 L2-0
+STATE_JSON: ```json
+{"at": {"A0": "L2-0", "A1": "L2-0", "P0": "L0-0", "P1": "L0-0", "P2": "L2-0", "P3": "L2-1", "P4": null, "T0": "L0-0", "T1": "L1-0", "T2": "L2-1"}, "in": {"P0": null, "P1": null, "P2": null, "P3": null, "P4": "A0"}}
+```
+
+17. Unload-airplane P4 from A0 at L2-0
+
+ACTION: unload-airplane P4 A0 L2-0
+STATE_JSON: ```json
+{"at": {"A0": "L2-0", "A1": "L2-0", "P0": "L0-0", "P1": "L0-0", "P2": "L2-0", "P3": "L2-1", "P4": "L2-0", "T0": "L0-0", "T1": "L1-0", "T2": "L2-1"}, "in": {"P0": null, "P1": null, "P2": null, "P3": null, "P4": null}}
+```
+
+18. Drive-truck T2 from L2-1 to L2-0 in C2
+
+ACTION: drive-truck T2 L2-1 L2-0 C2
+STATE_JSON: ```json
+{"at": {"A0": "L2-0", "A1": "L2-0", "P0": "L0-0", "P1": "L0-0", "P2": "L2-0", "P3": "L2-1", "P4": "L2-0", "T0": "L0-0", "T1": "L1-0", "T2": "L2-0"}, "in": {"P0": null, "P1": null, "P2": null, "P3": null, "P4": null}}
+```
+
+19. Load-truck P4 to T2 at L2-0
+
+ACTION: load-truck P4 T2 L2-0
+STATE_JSON: ```json
+{"at": {"A0": "L2-0", "A1": "L2-0", "P0": "L0-0", "P1": "L0-0", "P2": "L2-0", "P3": "L2-1", "P4": null, "T0": "L0-0", "T1": "L1-0", "T2": "L2-0"}, "in": {"P0": null, "P1": null, "P2": null, "P3": null, "P4": "T2"}}
+```
+
+20. Drive-truck T2 from L2-0 to L2-2 in C2
+
+ACTION: drive-truck T2 L2-0 L2-2 C2
+STATE_JSON: ```json
+{"at": {"A0": "L2-0", "A1": "L2-0", "P0": "L0-0", "P1": "L0-0", "P2": "L2-0", "P3": "L2-1", "P4": null, "T0": "L0-0", "T1": "L1-0", "T2": "L2-2"}, "in": {"P0": null, "P1": null, "P2": null, "P3": null, "P4": "T2"}}
+```
+
+21. Unload-truck P4 from T2 at L2-2
+
+ACTION: unload-truck P4 T2 L2-2
+STATE_JSON: ```json
+{"at": {"A0": "L2-0", "A1": "L2-0", "P0": "L0-0", "P1": "L0-0", "P2": "L2-0", "P3": "L2-1", "P4": "L2-2", "T0": "L0-0", "T1": "L1-0", "T2": "L2-2"}, "in": {"P0": null, "P1": null, "P2": null, "P3": null, "P4": null}}
+```
+
+All packages are at their goal locations.
 
 Plan summary:
-1. drive-truck T0 L0-2 L0-1 C0
-2. load-truck P0 T0 L0-1
-3. drive-truck T0 L0-1 L0-0 C0
-4. unload-truck P0 T0 L0-0
-5. load-airplane P0 A0 L0-0
-6. fly-airplane A0 L0-0 L1-0
-7. unload-airplane P0 A0 L1-0
-8. drive-truck T1 L1-2 L1-0 C1
-9. load-truck P0 T1 L1-0
-10. drive-truck T1 L1-0 L1-1 C1
-11. unload-truck P0 T1 L1-1\
-"""
+1. load-airplane P1 A0 L2-0
+2. fly-airplane A0 L2-0 L0-0
+3. unload-airplane P1 A0 L0-0
+4. drive-truck T1 L1-0 L1-2 C1
+5. load-truck P3 T1 L1-2
+6. drive-truck T1 L1-2 L1-0 C1
+7. unload-truck P3 T1 L1-0
+8. fly-airplane A1 L2-0 L1-0
+9. load-airplane P3 A1 L1-0
+10. fly-airplane A1 L1-0 L2-0
+11. unload-airplane P3 A1 L2-0
+12. load-truck P3 T2 L2-0
+13. drive-truck T2 L2-0 L2-1 C2
+14. unload-truck P3 T2 L2-1
+15. load-airplane P4 A0 L0-0
+16. fly-airplane A0 L0-0 L2-0
+17. unload-airplane P4 A0 L2-0
+18. drive-truck T2 L2-1 L2-0 C2
+19. load-truck P4 T2 L2-0
+20. drive-truck T2 L2-0 L2-2 C2
+21. unload-truck P4 T2 L2-2"""
+
 
 # ---------------------------------------------------------------------------
-# JSON + Goal-Residual variants
-# Same examples with goal_satisfied / goal_remaining appended to each state.
+# Example 3  (Paper B.4 Ex3)
+# 2 cities, 1 airplane, 2 trucks, 4 packages, 30 actions
 #
-# Goal predicates are expressed as strings: "P0 at L0-1"
+# Initial:
+#   A0 at L1-0
+#   T0 at L0-0, T1 at L1-1
+#   P0 at L1-0, P1 at L1-1, P2 at L0-0, P3 at L0-1
+# Goal: P0@L0-1, P1@L0-1, P2@L1-0, P3@L1-1
 # ---------------------------------------------------------------------------
 
-LOGISTICS_JSON_GOAL_EXAMPLE_1 = """\
+LOGISTICS_JSON_EXAMPLE_3 = """\
 Initial state (JSON):
-{"at": {"A0": "L0-0", "P0": "L0-2", "T0": "L0-1"}, "in": {"P0": null}, "goal_satisfied": [], "goal_remaining": ["P0 at L0-1"]}
+{"at": {"A0": "L1-0", "P0": "L1-0", "P1": "L1-1", "P2": "L0-0", "P3": "L0-1", "T0": "L0-0", "T1": "L1-1"}, "in": {"P0": null, "P1": null, "P2": null, "P3": null}}
 
 Goal state (JSON):
-{"at": {"P0": "L0-1"}, "in": {"P0": null}}
+{"at": {"P0": "L0-1", "P1": "L0-1", "P2": "L1-0", "P3": "L1-1"}, "in": {"P0": null, "P1": null, "P2": null, "P3": null}}
 
 STATE_JSON: ```json
-{"at": {"A0": "L0-0", "P0": "L0-2", "T0": "L0-1"}, "in": {"P0": null}, "goal_satisfied": [], "goal_remaining": ["P0 at L0-1"]}
+{"at": {"A0": "L1-0", "P0": "L1-0", "P1": "L1-1", "P2": "L0-0", "P3": "L0-1", "T0": "L0-0", "T1": "L1-1"}, "in": {"P0": null, "P1": null, "P2": null, "P3": null}}
 ```
 
-I need to deliver P0 from L0-2 to L0-1. Let me try driving toward the airport first.
+There are two cities since only locations talked about are L0 and L1. We have one airplane A0, and it is in L1-0. Let's first examine which packages need to moved to other cities.
 
-ACTION: drive-truck T0 L0-1 L0-0 C0
+P0: L1 -> L0 (yes)
+P1: L1 -> L0 (yes)
+P2: L0 -> L1 (yes)
+P3: L0 -> L1 (yes)
+
+All packages need to be transferred via planes to other cities. Let's transfer P0 first. P0 needs to go from L1-0 to L0-1. The airplane A0 is already at L1-0, so we can directly load it to take it to L0-0. Then, we need to use the truck T0 to take it from L0-0 to L0-1. The truck in C0 is T0 and it's at L0-0. So, the package P0 can be directly loaded to T0 to be taken to the final destination L0-1.
+
+1. Load-airplane P0 to A0 at L1-0
+
+ACTION: load-airplane P0 A0 L1-0
 STATE_JSON: ```json
-{"at": {"A0": "L0-0", "P0": "L0-2", "T0": "L0-0"}, "in": {"P0": null}, "goal_satisfied": [], "goal_remaining": ["P0 at L0-1"]}
+{"at": {"A0": "L1-0", "P0": null, "P1": "L1-1", "P2": "L0-0", "P3": "L0-1", "T0": "L0-0", "T1": "L1-1"}, "in": {"P0": "A0", "P1": null, "P2": null, "P3": null}}
 ```
 
-T0 went to the airport but P0 is still at L0-2. That didn't help. Backtrack.
+2. Fly-airplane A0 from L1-0 to L0-0
+
+ACTION: fly-airplane A0 L1-0 L0-0
+STATE_JSON: ```json
+{"at": {"A0": "L0-0", "P0": null, "P1": "L1-1", "P2": "L0-0", "P3": "L0-1", "T0": "L0-0", "T1": "L1-1"}, "in": {"P0": "A0", "P1": null, "P2": null, "P3": null}}
+```
+
+3. Unload-airplane P0 from A0 at L0-0
+
+ACTION: unload-airplane P0 A0 L0-0
+STATE_JSON: ```json
+{"at": {"A0": "L0-0", "P0": "L0-0", "P1": "L1-1", "P2": "L0-0", "P3": "L0-1", "T0": "L0-0", "T1": "L1-1"}, "in": {"P0": null, "P1": null, "P2": null, "P3": null}}
+```
+
+4. Load-truck P0 to T0 at L0-0
+
+ACTION: load-truck P0 T0 L0-0
+STATE_JSON: ```json
+{"at": {"A0": "L0-0", "P0": null, "P1": "L1-1", "P2": "L0-0", "P3": "L0-1", "T0": "L0-0", "T1": "L1-1"}, "in": {"P0": "T0", "P1": null, "P2": null, "P3": null}}
+```
+
+5. Drive-truck T0 from L0-0 to L0-1 in C0
 
 ACTION: drive-truck T0 L0-0 L0-1 C0
 STATE_JSON: ```json
-{"at": {"A0": "L0-0", "P0": "L0-2", "T0": "L0-1"}, "in": {"P0": null}, "goal_satisfied": [], "goal_remaining": ["P0 at L0-1"]}
+{"at": {"A0": "L0-0", "P0": null, "P1": "L1-1", "P2": "L0-0", "P3": "L0-1", "T0": "L0-1", "T1": "L1-1"}, "in": {"P0": "T0", "P1": null, "P2": null, "P3": null}}
 ```
 
-Back to start. Drive T0 directly to L0-2 where P0 is.
-
-ACTION: drive-truck T0 L0-1 L0-2 C0
-STATE_JSON: ```json
-{"at": {"A0": "L0-0", "P0": "L0-2", "T0": "L0-2"}, "in": {"P0": null}, "goal_satisfied": [], "goal_remaining": ["P0 at L0-1"]}
-```
-
-Load P0 onto T0.
-
-ACTION: load-truck P0 T0 L0-2
-STATE_JSON: ```json
-{"at": {"A0": "L0-0", "P0": null, "T0": "L0-2"}, "in": {"P0": "T0"}, "goal_satisfied": [], "goal_remaining": ["P0 at L0-1"]}
-```
-
-Drive T0 with P0 to L0-1.
-
-ACTION: drive-truck T0 L0-2 L0-1 C0
-STATE_JSON: ```json
-{"at": {"A0": "L0-0", "P0": null, "T0": "L0-1"}, "in": {"P0": "T0"}, "goal_satisfied": [], "goal_remaining": ["P0 at L0-1"]}
-```
-
-Unload P0 at L0-1.
+6. Unload-truck P0 from T0 at L0-1
 
 ACTION: unload-truck P0 T0 L0-1
 STATE_JSON: ```json
-{"at": {"A0": "L0-0", "P0": "L0-1", "T0": "L0-1"}, "in": {"P0": null}, "goal_satisfied": ["P0 at L0-1"], "goal_remaining": []}
+{"at": {"A0": "L0-0", "P0": "L0-1", "P1": "L1-1", "P2": "L0-0", "P3": "L0-1", "T0": "L0-1", "T1": "L1-1"}, "in": {"P0": null, "P1": null, "P2": null, "P3": null}}
 ```
 
-All goal conditions satisfied.
+Now, let's continue with P1. P1 needs to go from L1-1 to L0-1. The truck in C1 is T1 and it's in L1-1 as the package, so we can directly load the package to T1. The airplane A0 is at L0-0, so we need to fly it to L1-0 to load P1. Then, we need to fly it back to L0-0 and use the truck T0 to take it to L0-1. The truck in C0 is T0 and it's in L0-1. So, it needs to be moved from L0-1 to L0-0 to load P1 and to be driven back to L0-1 which is the target destination for P1.
 
-Plan summary:
-1. drive-truck T0 L0-1 L0-2 C0
-2. load-truck P0 T0 L0-2
-3. drive-truck T0 L0-2 L0-1 C0
-4. unload-truck P0 T0 L0-1\
-"""
+7. Load-truck P1 to T1 at L1-1
 
-LOGISTICS_JSON_GOAL_EXAMPLE_2 = """\
-Initial state (JSON):
-{"at": {"A0": "L0-0", "P0": "L0-1", "T0": "L0-2", "T1": "L1-2"}, "in": {"P0": null}, "goal_satisfied": [], "goal_remaining": ["P0 at L1-1"]}
-
-Goal state (JSON):
-{"at": {"P0": "L1-1"}, "in": {"P0": null}}
-
+ACTION: load-truck P1 T1 L1-1
 STATE_JSON: ```json
-{"at": {"A0": "L0-0", "P0": "L0-1", "T0": "L0-2", "T1": "L1-2"}, "in": {"P0": null}, "goal_satisfied": [], "goal_remaining": ["P0 at L1-1"]}
+{"at": {"A0": "L0-0", "P0": "L0-1", "P1": null, "P2": "L0-0", "P3": "L0-1", "T0": "L0-1", "T1": "L1-1"}, "in": {"P0": null, "P1": "T1", "P2": null, "P3": null}}
 ```
 
-P0 must cross from C0 to C1. Use T0 to bring P0 to L0-0, fly A0 to L1-0, use T1 to deliver to L1-1.
+8. Drive-truck T1 from L1-1 to L1-0 in C1
 
-ACTION: drive-truck T0 L0-2 L0-1 C0
+ACTION: drive-truck T1 L1-1 L1-0 C1
 STATE_JSON: ```json
-{"at": {"A0": "L0-0", "P0": "L0-1", "T0": "L0-1", "T1": "L1-2"}, "in": {"P0": null}, "goal_satisfied": [], "goal_remaining": ["P0 at L1-1"]}
+{"at": {"A0": "L0-0", "P0": "L0-1", "P1": null, "P2": "L0-0", "P3": "L0-1", "T0": "L0-1", "T1": "L1-0"}, "in": {"P0": null, "P1": "T1", "P2": null, "P3": null}}
 ```
 
-ACTION: load-truck P0 T0 L0-1
+9. Unload-truck P1 from T1 at L1-0
+
+ACTION: unload-truck P1 T1 L1-0
 STATE_JSON: ```json
-{"at": {"A0": "L0-0", "P0": null, "T0": "L0-1", "T1": "L1-2"}, "in": {"P0": "T0"}, "goal_satisfied": [], "goal_remaining": ["P0 at L1-1"]}
+{"at": {"A0": "L0-0", "P0": "L0-1", "P1": "L1-0", "P2": "L0-0", "P3": "L0-1", "T0": "L0-1", "T1": "L1-0"}, "in": {"P0": null, "P1": null, "P2": null, "P3": null}}
 ```
 
-ACTION: drive-truck T0 L0-1 L0-0 C0
-STATE_JSON: ```json
-{"at": {"A0": "L0-0", "P0": null, "T0": "L0-0", "T1": "L1-2"}, "in": {"P0": "T0"}, "goal_satisfied": [], "goal_remaining": ["P0 at L1-1"]}
-```
-
-ACTION: unload-truck P0 T0 L0-0
-STATE_JSON: ```json
-{"at": {"A0": "L0-0", "P0": "L0-0", "T0": "L0-0", "T1": "L1-2"}, "in": {"P0": null}, "goal_satisfied": [], "goal_remaining": ["P0 at L1-1"]}
-```
-
-ACTION: load-airplane P0 A0 L0-0
-STATE_JSON: ```json
-{"at": {"A0": "L0-0", "P0": null, "T0": "L0-0", "T1": "L1-2"}, "in": {"P0": "A0"}, "goal_satisfied": [], "goal_remaining": ["P0 at L1-1"]}
-```
+10. Fly-airplane A0 from L0-0 to L1-0
 
 ACTION: fly-airplane A0 L0-0 L1-0
 STATE_JSON: ```json
-{"at": {"A0": "L1-0", "P0": null, "T0": "L0-0", "T1": "L1-2"}, "in": {"P0": "A0"}, "goal_satisfied": [], "goal_remaining": ["P0 at L1-1"]}
+{"at": {"A0": "L1-0", "P0": "L0-1", "P1": "L1-0", "P2": "L0-0", "P3": "L0-1", "T0": "L0-1", "T1": "L1-0"}, "in": {"P0": null, "P1": null, "P2": null, "P3": null}}
 ```
 
-ACTION: unload-airplane P0 A0 L1-0
+11. Load-airplane P1 to A0 at L1-0
+
+ACTION: load-airplane P1 A0 L1-0
 STATE_JSON: ```json
-{"at": {"A0": "L1-0", "P0": "L1-0", "T0": "L0-0", "T1": "L1-2"}, "in": {"P0": null}, "goal_satisfied": [], "goal_remaining": ["P0 at L1-1"]}
+{"at": {"A0": "L1-0", "P0": "L0-1", "P1": null, "P2": "L0-0", "P3": "L0-1", "T0": "L0-1", "T1": "L1-0"}, "in": {"P0": null, "P1": "A0", "P2": null, "P3": null}}
 ```
 
-ACTION: drive-truck T1 L1-2 L1-0 C1
+12. Fly-airplane A0 from L1-0 to L0-0
+
+ACTION: fly-airplane A0 L1-0 L0-0
 STATE_JSON: ```json
-{"at": {"A0": "L1-0", "P0": "L1-0", "T0": "L0-0", "T1": "L1-0"}, "in": {"P0": null}, "goal_satisfied": [], "goal_remaining": ["P0 at L1-1"]}
+{"at": {"A0": "L0-0", "P0": "L0-1", "P1": null, "P2": "L0-0", "P3": "L0-1", "T0": "L0-1", "T1": "L1-0"}, "in": {"P0": null, "P1": "A0", "P2": null, "P3": null}}
 ```
 
-ACTION: load-truck P0 T1 L1-0
+13. Unload-airplane P1 from A0 at L0-0
+
+ACTION: unload-airplane P1 A0 L0-0
 STATE_JSON: ```json
-{"at": {"A0": "L1-0", "P0": null, "T0": "L0-0", "T1": "L1-0"}, "in": {"P0": "T1"}, "goal_satisfied": [], "goal_remaining": ["P0 at L1-1"]}
+{"at": {"A0": "L0-0", "P0": "L0-1", "P1": "L0-0", "P2": "L0-0", "P3": "L0-1", "T0": "L0-1", "T1": "L1-0"}, "in": {"P0": null, "P1": null, "P2": null, "P3": null}}
 ```
+
+14. Drive-truck T0 from L0-1 to L0-0 in C0
+
+ACTION: drive-truck T0 L0-1 L0-0 C0
+STATE_JSON: ```json
+{"at": {"A0": "L0-0", "P0": "L0-1", "P1": "L0-0", "P2": "L0-0", "P3": "L0-1", "T0": "L0-0", "T1": "L1-0"}, "in": {"P0": null, "P1": null, "P2": null, "P3": null}}
+```
+
+15. Load-truck P1 to T0 at L0-0
+
+ACTION: load-truck P1 T0 L0-0
+STATE_JSON: ```json
+{"at": {"A0": "L0-0", "P0": "L0-1", "P1": null, "P2": "L0-0", "P3": "L0-1", "T0": "L0-0", "T1": "L1-0"}, "in": {"P0": null, "P1": "T0", "P2": null, "P3": null}}
+```
+
+16. Drive-truck T0 from L0-0 to L0-1 in C0
+
+ACTION: drive-truck T0 L0-0 L0-1 C0
+STATE_JSON: ```json
+{"at": {"A0": "L0-0", "P0": "L0-1", "P1": null, "P2": "L0-0", "P3": "L0-1", "T0": "L0-1", "T1": "L1-0"}, "in": {"P0": null, "P1": "T0", "P2": null, "P3": null}}
+```
+
+17. Unload-truck P1 from T0 at L0-1
+
+ACTION: unload-truck P1 T0 L0-1
+STATE_JSON: ```json
+{"at": {"A0": "L0-0", "P0": "L0-1", "P1": "L0-1", "P2": "L0-0", "P3": "L0-1", "T0": "L0-1", "T1": "L1-0"}, "in": {"P0": null, "P1": null, "P2": null, "P3": null}}
+```
+
+Now, let's continue with P2. P2 needs to go from L0-0 to L1-0. The airplane A0 is already at L0-0, so we can directly load it to take it to L1-0 which is the final destination.
+
+18. Load-airplane P2 to A0 at L0-0
+
+ACTION: load-airplane P2 A0 L0-0
+STATE_JSON: ```json
+{"at": {"A0": "L0-0", "P0": "L0-1", "P1": "L0-1", "P2": null, "P3": "L0-1", "T0": "L0-1", "T1": "L1-0"}, "in": {"P0": null, "P1": null, "P2": "A0", "P3": null}}
+```
+
+19. Fly-airplane A0 from L0-0 to L1-0
+
+ACTION: fly-airplane A0 L0-0 L1-0
+STATE_JSON: ```json
+{"at": {"A0": "L1-0", "P0": "L0-1", "P1": "L0-1", "P2": null, "P3": "L0-1", "T0": "L0-1", "T1": "L1-0"}, "in": {"P0": null, "P1": null, "P2": "A0", "P3": null}}
+```
+
+20. Unload-airplane P2 from A0 at L1-0
+
+ACTION: unload-airplane P2 A0 L1-0
+STATE_JSON: ```json
+{"at": {"A0": "L1-0", "P0": "L0-1", "P1": "L0-1", "P2": "L1-0", "P3": "L0-1", "T0": "L0-1", "T1": "L1-0"}, "in": {"P0": null, "P1": null, "P2": null, "P3": null}}
+```
+
+Finally, let's move P3. P3 needs to go from L0-1 to L1-1. The truck in C0 is T0 and it's in L0-1 already. So, we can directly load P3 to T0 to transfer it to L0-0. The airplane A0 is in L1-0, so it needs to be transferred to L0-0 to load P3 to transfer it to L1-0. The truck in C1 is T1 and it's already in L1-0, so we can directly load P3 to it to carry it to the target destination L1-1.
+
+21. Load-truck P3 to T0 at L0-1
+
+ACTION: load-truck P3 T0 L0-1
+STATE_JSON: ```json
+{"at": {"A0": "L1-0", "P0": "L0-1", "P1": "L0-1", "P2": "L1-0", "P3": null, "T0": "L0-1", "T1": "L1-0"}, "in": {"P0": null, "P1": null, "P2": null, "P3": "T0"}}
+```
+
+22. Drive-truck T0 from L0-1 to L0-0 in C0
+
+ACTION: drive-truck T0 L0-1 L0-0 C0
+STATE_JSON: ```json
+{"at": {"A0": "L1-0", "P0": "L0-1", "P1": "L0-1", "P2": "L1-0", "P3": null, "T0": "L0-0", "T1": "L1-0"}, "in": {"P0": null, "P1": null, "P2": null, "P3": "T0"}}
+```
+
+23. Unload-truck P3 from T0 at L0-0
+
+ACTION: unload-truck P3 T0 L0-0
+STATE_JSON: ```json
+{"at": {"A0": "L1-0", "P0": "L0-1", "P1": "L0-1", "P2": "L1-0", "P3": "L0-0", "T0": "L0-0", "T1": "L1-0"}, "in": {"P0": null, "P1": null, "P2": null, "P3": null}}
+```
+
+24. Fly-airplane A0 from L1-0 to L0-0
+
+ACTION: fly-airplane A0 L1-0 L0-0
+STATE_JSON: ```json
+{"at": {"A0": "L0-0", "P0": "L0-1", "P1": "L0-1", "P2": "L1-0", "P3": "L0-0", "T0": "L0-0", "T1": "L1-0"}, "in": {"P0": null, "P1": null, "P2": null, "P3": null}}
+```
+
+25. Load-airplane P3 to A0 at L0-0
+
+ACTION: load-airplane P3 A0 L0-0
+STATE_JSON: ```json
+{"at": {"A0": "L0-0", "P0": "L0-1", "P1": "L0-1", "P2": "L1-0", "P3": null, "T0": "L0-0", "T1": "L1-0"}, "in": {"P0": null, "P1": null, "P2": null, "P3": "A0"}}
+```
+
+26. Fly-airplane A0 from L0-0 to L1-0
+
+ACTION: fly-airplane A0 L0-0 L1-0
+STATE_JSON: ```json
+{"at": {"A0": "L1-0", "P0": "L0-1", "P1": "L0-1", "P2": "L1-0", "P3": null, "T0": "L0-0", "T1": "L1-0"}, "in": {"P0": null, "P1": null, "P2": null, "P3": "A0"}}
+```
+
+27. Unload-airplane P3 from A0 at L1-0
+
+ACTION: unload-airplane P3 A0 L1-0
+STATE_JSON: ```json
+{"at": {"A0": "L1-0", "P0": "L0-1", "P1": "L0-1", "P2": "L1-0", "P3": "L1-0", "T0": "L0-0", "T1": "L1-0"}, "in": {"P0": null, "P1": null, "P2": null, "P3": null}}
+```
+
+28. Load-truck P3 to T1 at L1-0
+
+ACTION: load-truck P3 T1 L1-0
+STATE_JSON: ```json
+{"at": {"A0": "L1-0", "P0": "L0-1", "P1": "L0-1", "P2": "L1-0", "P3": null, "T0": "L0-0", "T1": "L1-0"}, "in": {"P0": null, "P1": null, "P2": null, "P3": "T1"}}
+```
+
+29. Drive-truck T1 from L1-0 to L1-1 in C1
 
 ACTION: drive-truck T1 L1-0 L1-1 C1
 STATE_JSON: ```json
-{"at": {"A0": "L1-0", "P0": null, "T0": "L0-0", "T1": "L1-1"}, "in": {"P0": "T1"}, "goal_satisfied": [], "goal_remaining": ["P0 at L1-1"]}
+{"at": {"A0": "L1-0", "P0": "L0-1", "P1": "L0-1", "P2": "L1-0", "P3": null, "T0": "L0-0", "T1": "L1-1"}, "in": {"P0": null, "P1": null, "P2": null, "P3": "T1"}}
 ```
 
-ACTION: unload-truck P0 T1 L1-1
+30. Unload-truck P3 from T1 at L1-1
+
+ACTION: unload-truck P3 T1 L1-1
 STATE_JSON: ```json
-{"at": {"A0": "L1-0", "P0": "L1-1", "T0": "L0-0", "T1": "L1-1"}, "in": {"P0": null}, "goal_satisfied": ["P0 at L1-1"], "goal_remaining": []}
+{"at": {"A0": "L1-0", "P0": "L0-1", "P1": "L0-1", "P2": "L1-0", "P3": "L1-1", "T0": "L0-0", "T1": "L1-1"}, "in": {"P0": null, "P1": null, "P2": null, "P3": null}}
 ```
 
-All goal conditions satisfied.
+All packages are at their goal locations.
 
 Plan summary:
-1. drive-truck T0 L0-2 L0-1 C0
-2. load-truck P0 T0 L0-1
-3. drive-truck T0 L0-1 L0-0 C0
-4. unload-truck P0 T0 L0-0
-5. load-airplane P0 A0 L0-0
-6. fly-airplane A0 L0-0 L1-0
-7. unload-airplane P0 A0 L1-0
-8. drive-truck T1 L1-2 L1-0 C1
-9. load-truck P0 T1 L1-0
-10. drive-truck T1 L1-0 L1-1 C1
-11. unload-truck P0 T1 L1-1\
-"""
+1. load-airplane P0 A0 L1-0
+2. fly-airplane A0 L1-0 L0-0
+3. unload-airplane P0 A0 L0-0
+4. load-truck P0 T0 L0-0
+5. drive-truck T0 L0-0 L0-1 C0
+6. unload-truck P0 T0 L0-1
+7. load-truck P1 T1 L1-1
+8. drive-truck T1 L1-1 L1-0 C1
+9. unload-truck P1 T1 L1-0
+10. fly-airplane A0 L0-0 L1-0
+11. load-airplane P1 A0 L1-0
+12. fly-airplane A0 L1-0 L0-0
+13. unload-airplane P1 A0 L0-0
+14. drive-truck T0 L0-1 L0-0 C0
+15. load-truck P1 T0 L0-0
+16. drive-truck T0 L0-0 L0-1 C0
+17. unload-truck P1 T0 L0-1
+18. load-airplane P2 A0 L0-0
+19. fly-airplane A0 L0-0 L1-0
+20. unload-airplane P2 A0 L1-0
+21. load-truck P3 T0 L0-1
+22. drive-truck T0 L0-1 L0-0 C0
+23. unload-truck P3 T0 L0-0
+24. fly-airplane A0 L1-0 L0-0
+25. load-airplane P3 A0 L0-0
+26. fly-airplane A0 L0-0 L1-0
+27. unload-airplane P3 A0 L1-0
+28. load-truck P3 T1 L1-0
+29. drive-truck T1 L1-0 L1-1 C1
+30. unload-truck P3 T1 L1-1"""
 
 
 def get_logistics_json_examples() -> list:
-    return [LOGISTICS_JSON_EXAMPLE_1, LOGISTICS_JSON_EXAMPLE_2]
+    return [LOGISTICS_JSON_EXAMPLE_1, LOGISTICS_JSON_EXAMPLE_2, LOGISTICS_JSON_EXAMPLE_3]
 
 
+# Legacy goal-residual variants (kept for backward compatibility, not used by default)
 def get_logistics_json_goal_examples() -> list:
-    return [LOGISTICS_JSON_GOAL_EXAMPLE_1, LOGISTICS_JSON_GOAL_EXAMPLE_2]
+    return get_logistics_json_examples()
