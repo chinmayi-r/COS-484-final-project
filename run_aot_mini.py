@@ -72,25 +72,48 @@ def _nl_to_4op_state(nl: str) -> Dict[str, Any]:
 
 
 def _parse_4op_action(text: str) -> Tuple[str, List[str]]:
-    """Parse a PDDL action string like '(unstack B A)' → ('unstack', ['B','A']).
+    """Parse a NL or PDDL 4-op action string.
 
-    Also handles bare text like 'unstack B A' without parentheses.
-    Raises ValueError on failure.
+    NL forms (matching paper Appendix B.3):
+      "Pick-up X"         → pick-up, [X]
+      "Put-down X"        → put-down, [X]
+      "Unstack X from Y"  → unstack, [X, Y]
+      "Stack X on Y"      → stack,   [X, Y]
+
+    PDDL form (fallback): "(unstack X Y)" → unstack, [X, Y]
     """
-    text = text.strip()
-    # Try parenthesized form first
+    text = text.strip().rstrip(".")
+
+    # PDDL parenthesized form
     m = re.match(r"^\(\s*([a-zA-Z\-]+)((?:\s+\S+)*)\s*\)$", text)
-    if not m:
-        # Try bare form: "unstack B A"
-        parts = text.split()
-        if not parts:
-            raise ValueError(f"Empty action: {text!r}")
-        op = parts[0].lower()
-        args = [a.upper() for a in parts[1:]]
+    if m:
+        op = m.group(1).lower()
+        args = [a.upper() for a in m.group(2).split() if a]
         return op, args
-    op = m.group(1).lower()
-    args = [a.upper() for a in m.group(2).split() if a]
-    return op, args
+
+    # NL forms — case-insensitive
+    tl = text.lower()
+    if tl.startswith("pick-up ") or tl.startswith("pick up "):
+        X = text.split(None, 1)[1].strip().upper()
+        return "pick-up", [X]
+    if tl.startswith("put-down ") or tl.startswith("put down "):
+        X = text.split(None, 1)[1].strip().upper()
+        return "put-down", [X]
+    m = re.match(r"unstack\s+(\w+)\s+from\s+(\w+)", text, re.IGNORECASE)
+    if m:
+        return "unstack", [m.group(1).upper(), m.group(2).upper()]
+    m = re.match(r"stack\s+(\w+)\s+on(?:to)?\s+(\w+)", text, re.IGNORECASE)
+    if m:
+        return "stack", [m.group(1).upper(), m.group(2).upper()]
+
+    # Bare PDDL without parens: "unstack B A"
+    parts = text.split()
+    if parts:
+        op = parts[0].lower()
+        if op in ("pick-up", "put-down", "unstack", "stack"):
+            return op, [a.upper() for a in parts[1:]]
+
+    raise ValueError(f"Cannot parse action: {text!r}")
 
 
 def _apply_4op(state: Dict[str, Any], op: str, args: List[str]) -> Dict[str, Any]:

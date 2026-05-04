@@ -1,33 +1,32 @@
 """
-Few-shot Blocksworld examples using 4-op PDDL actions for AoT+ JSON extension.
+Blocksworld few-shot examples for AoT+ JSON extension.
 
-Operators: pick-up, put-down, unstack, stack — identical to the AoT+ paper.
-State format: {"on": {block: "table"|"held"|block}, "clear": [...], "holding": null|block, "handempty": bool}
-
-Checkpoint interval: STATE_JSON every 3 actions + always after the final action.
+Action format matches the paper (Appendix B.3): natural-language 4-op
+  "Pick-up X", "Put-down X", "Unstack X from Y", "Stack X on Y"
+State format: JSON (STATE_JSON blocks every 3 actions + after final action).
 
 Condition B: plain JSON state.
-Condition C: JSON state + "goal_satisfied" / "goal_remaining" fields.
+Condition C: JSON state + goal_satisfied / goal_remaining fields.
 """
 
 # ---------------------------------------------------------------------------
-# Condition B — 4-op actions, JSON state, no goal tracking
+# Condition B — NL 4-op actions, JSON state, no goal tracking
 #
 # Example 1: 3 blocks
 #   Initial: on={A:table, B:A, C:table}  clear=[B,C]
 #   Goal:    on={A:B, B:C, C:table}      clear=[A]
 #
-# 10-action trace with one wrong detour (pick-up C → stack C B → undo):
-#   1. (pick-up C)          wrong direction
-#   2. (stack C B)
-#   3. (unstack C B)        undo  [CHECKPOINT]
-#   4. (put-down C)
-#   5. (unstack B A)
-#   6. (put-down B)         [CHECKPOINT]
-#   7. (pick-up B)
-#   8. (stack B C)
-#   9. (pick-up A)          [CHECKPOINT]
-#  10. (stack A B)          [CHECKPOINT — final, GOAL]
+# 10-action trace (wrong detour then correct plan):
+#   1. Pick-up C          wrong direction
+#   2. Stack C on B
+#   3. Unstack C from B   undo  [CHECKPOINT]
+#   4. Put-down C
+#   5. Unstack B from A
+#   6. Put-down B         [CHECKPOINT]
+#   7. Pick-up B
+#   8. Stack B on C
+#   9. Pick-up A          [CHECKPOINT]
+#  10. Stack A on B        [CHECKPOINT — final, GOAL]
 # ---------------------------------------------------------------------------
 
 BLOCKSWORLD_4OP_JSON_EXAMPLE_1 = """\
@@ -45,35 +44,35 @@ I'll solve this step by step.
 
 Let me first try placing C on B.
 
-ACTION: (pick-up C)
-ACTION: (stack C B)
+ACTION: Pick-up C
+ACTION: Stack C on B
 
 That leaves A blocked and doesn't progress toward the goal. Let me undo.
 
-ACTION: (unstack C B)
+ACTION: Unstack C from B
 STATE_JSON: ```json
 {"on": {"A": "table", "B": "A", "C": "held"}, "clear": ["B"], "holding": "C", "handempty": false}
 ```
 
 Good. Put C back down, then unstack B from A first.
 
-ACTION: (put-down C)
-ACTION: (unstack B A)
-ACTION: (put-down B)
+ACTION: Put-down C
+ACTION: Unstack B from A
+ACTION: Put-down B
 STATE_JSON: ```json
 {"on": {"A": "table", "B": "table", "C": "table"}, "clear": ["A", "B", "C"], "holding": null, "handempty": true}
 ```
 
 All three blocks are on the table. Build the goal stack bottom-up: B on C, then A on B.
 
-ACTION: (pick-up B)
-ACTION: (stack B C)
-ACTION: (pick-up A)
+ACTION: Pick-up B
+ACTION: Stack B on C
+ACTION: Pick-up A
 STATE_JSON: ```json
 {"on": {"A": "held", "B": "C", "C": "table"}, "clear": ["B"], "holding": "A", "handempty": false}
 ```
 
-ACTION: (stack A B)
+ACTION: Stack A on B
 STATE_JSON: ```json
 {"on": {"A": "B", "B": "C", "C": "table"}, "clear": ["A"], "holding": null, "handempty": true}
 ```
@@ -81,32 +80,20 @@ STATE_JSON: ```json
 Goal reached: A on B, B on C, C on table.
 
 Plan summary:
-1. (unstack B A)
-2. (put-down B)
-3. (pick-up B)
-4. (stack B C)
-5. (pick-up A)
-6. (stack A B)\
+1. Unstack B from A
+2. Put-down B
+3. Pick-up B
+4. Stack B on C
+5. Pick-up A
+6. Stack A on B\
 """
 
 # ---------------------------------------------------------------------------
-# Condition B — Example 2: 4 blocks, clean reverse-stack (no backtracking)
+# Condition B — Example 2: 4 blocks, reverse stack (no backtracking)
 #   Initial: on={A:B, B:C, C:D, D:table}  clear=[A]
 #   Goal:    on={A:table, B:A, C:B, D:C}  clear=[D]
 #
-# 12-action trace:
-#   1. (unstack A B)
-#   2. (put-down A)
-#   3. (unstack B C)   [CHECKPOINT]
-#   4. (put-down B)
-#   5. (unstack C D)
-#   6. (put-down C)    [CHECKPOINT]
-#   7. (pick-up B)
-#   8. (stack B A)
-#   9. (pick-up C)     [CHECKPOINT]
-#  10. (stack C B)
-#  11. (pick-up D)
-#  12. (stack D C)     [CHECKPOINT — final, GOAL]
+# 12-action trace, checkpoints at 3, 6, 9, 12:
 # ---------------------------------------------------------------------------
 
 BLOCKSWORLD_4OP_JSON_EXAMPLE_2 = """\
@@ -122,32 +109,32 @@ STATE_JSON: ```json
 
 I need to reverse the stack. Unstack everything to the table, then rebuild bottom-up.
 
-ACTION: (unstack A B)
-ACTION: (put-down A)
-ACTION: (unstack B C)
+ACTION: Unstack A from B
+ACTION: Put-down A
+ACTION: Unstack B from C
 STATE_JSON: ```json
 {"on": {"A": "table", "B": "held", "C": "D", "D": "table"}, "clear": ["A", "C"], "holding": "B", "handempty": false}
 ```
 
-ACTION: (put-down B)
-ACTION: (unstack C D)
-ACTION: (put-down C)
+ACTION: Put-down B
+ACTION: Unstack C from D
+ACTION: Put-down C
 STATE_JSON: ```json
 {"on": {"A": "table", "B": "table", "C": "table", "D": "table"}, "clear": ["A", "B", "C", "D"], "holding": null, "handempty": true}
 ```
 
-All blocks on the table. Build the new stack: B on A, then C on B, then D on C.
+All blocks on the table. Build: B on A, then C on B, then D on C.
 
-ACTION: (pick-up B)
-ACTION: (stack B A)
-ACTION: (pick-up C)
+ACTION: Pick-up B
+ACTION: Stack B on A
+ACTION: Pick-up C
 STATE_JSON: ```json
 {"on": {"A": "table", "B": "A", "C": "held", "D": "table"}, "clear": ["B", "D"], "holding": "C", "handempty": false}
 ```
 
-ACTION: (stack C B)
-ACTION: (pick-up D)
-ACTION: (stack D C)
+ACTION: Stack C on B
+ACTION: Pick-up D
+ACTION: Stack D on C
 STATE_JSON: ```json
 {"on": {"A": "table", "B": "A", "C": "B", "D": "C"}, "clear": ["D"], "holding": null, "handempty": true}
 ```
@@ -155,32 +142,25 @@ STATE_JSON: ```json
 Goal reached: B on A, C on B, D on C, A on table.
 
 Plan summary:
-1. (unstack A B)
-2. (put-down A)
-3. (unstack B C)
-4. (put-down B)
-5. (unstack C D)
-6. (put-down C)
-7. (pick-up B)
-8. (stack B A)
-9. (pick-up C)
-10. (stack C B)
-11. (pick-up D)
-12. (stack D C)\
+1. Unstack A from B
+2. Put-down A
+3. Unstack B from C
+4. Put-down B
+5. Unstack C from D
+6. Put-down C
+7. Pick-up B
+8. Stack B on A
+9. Pick-up C
+10. Stack C on B
+11. Pick-up D
+12. Stack D on C\
 """
 
 
 # ---------------------------------------------------------------------------
-# Condition C — same examples, with goal_satisfied / goal_remaining
+# Condition C — same examples with goal_satisfied / goal_remaining
 #
 # Goal predicates for Example 1: A on B, B on C, C on table, A clear
-#
-# Checkpoint goal tracking:
-#   S0:  goal_satisfied=["C on table"],             goal_remaining=["A on B","B on C","A clear"]
-#   S3:  goal_satisfied=[],                          goal_remaining=["A on B","B on C","C on table","A clear"]
-#   S6:  goal_satisfied=["C on table","A clear"],   goal_remaining=["A on B","B on C"]
-#   S9:  goal_satisfied=["B on C","C on table"],    goal_remaining=["A on B","A clear"]
-#   S10: goal_satisfied=[all],                      goal_remaining=[]
 # ---------------------------------------------------------------------------
 
 BLOCKSWORLD_4OP_JSON_GOAL_EXAMPLE_1 = """\
@@ -198,37 +178,37 @@ I'll solve this step by step.
 
 Let me first try placing C on B.
 
-ACTION: (pick-up C)
-ACTION: (stack C B)
+ACTION: Pick-up C
+ACTION: Stack C on B
 
 That loses the "C on table" condition — I moved backwards. Let me undo.
 
-ACTION: (unstack C B)
+ACTION: Unstack C from B
 STATE_JSON: ```json
 {"on": {"A": "table", "B": "A", "C": "held"}, "clear": ["B"], "holding": "C", "handempty": false, "goal_satisfied": [], "goal_remaining": ["A on B", "B on C", "C on table", "A clear"]}
 ```
 
-No goal conditions satisfied — I made things worse. Put C down, then unstack B from A.
+No goal conditions satisfied. Put C down, then unstack B from A.
 
-ACTION: (put-down C)
-ACTION: (unstack B A)
-ACTION: (put-down B)
+ACTION: Put-down C
+ACTION: Unstack B from A
+ACTION: Put-down B
 STATE_JSON: ```json
 {"on": {"A": "table", "B": "table", "C": "table"}, "clear": ["A", "B", "C"], "holding": null, "handempty": true, "goal_satisfied": ["C on table", "A clear"], "goal_remaining": ["A on B", "B on C"]}
 ```
 
-Two goal conditions satisfied now. Build: B on C, then A on B.
+Two goal conditions satisfied. Build: B on C, then A on B.
 
-ACTION: (pick-up B)
-ACTION: (stack B C)
-ACTION: (pick-up A)
+ACTION: Pick-up B
+ACTION: Stack B on C
+ACTION: Pick-up A
 STATE_JSON: ```json
 {"on": {"A": "held", "B": "C", "C": "table"}, "clear": ["B"], "holding": "A", "handempty": false, "goal_satisfied": ["B on C", "C on table"], "goal_remaining": ["A on B", "A clear"]}
 ```
 
 One action left.
 
-ACTION: (stack A B)
+ACTION: Stack A on B
 STATE_JSON: ```json
 {"on": {"A": "B", "B": "C", "C": "table"}, "clear": ["A"], "holding": null, "handempty": true, "goal_satisfied": ["A on B", "B on C", "C on table", "A clear"], "goal_remaining": []}
 ```
@@ -236,24 +216,13 @@ STATE_JSON: ```json
 All goal conditions satisfied.
 
 Plan summary:
-1. (unstack B A)
-2. (put-down B)
-3. (pick-up B)
-4. (stack B C)
-5. (pick-up A)
-6. (stack A B)\
+1. Unstack B from A
+2. Put-down B
+3. Pick-up B
+4. Stack B on C
+5. Pick-up A
+6. Stack A on B\
 """
-
-# ---------------------------------------------------------------------------
-# Condition C — Example 2: 4 blocks with goal tracking
-# Goal predicates: A on table, B on A, C on B, D on C, D clear
-#
-#   S0:  goal_satisfied=[],                              goal_remaining=[all 5]
-#   S3:  goal_satisfied=["A on table"],                  goal_remaining=[4 remaining]
-#   S6:  goal_satisfied=["A on table","D clear"],        goal_remaining=[3 remaining]
-#   S9:  goal_satisfied=["A on table","B on A","D clear"], goal_remaining=["C on B","D on C"]
-#   S12: goal_satisfied=[all],                           goal_remaining=[]
-# ---------------------------------------------------------------------------
 
 BLOCKSWORLD_4OP_JSON_GOAL_EXAMPLE_2 = """\
 Initial state (JSON):
@@ -268,36 +237,36 @@ STATE_JSON: ```json
 
 I need to reverse the stack. Unstack everything to the table, then rebuild bottom-up.
 
-ACTION: (unstack A B)
-ACTION: (put-down A)
-ACTION: (unstack B C)
+ACTION: Unstack A from B
+ACTION: Put-down A
+ACTION: Unstack B from C
 STATE_JSON: ```json
 {"on": {"A": "table", "B": "held", "C": "D", "D": "table"}, "clear": ["A", "C"], "holding": "B", "handempty": false, "goal_satisfied": ["A on table"], "goal_remaining": ["B on A", "C on B", "D on C", "D clear"]}
 ```
 
 Good — A on table is satisfied. Continue unstacking.
 
-ACTION: (put-down B)
-ACTION: (unstack C D)
-ACTION: (put-down C)
+ACTION: Put-down B
+ACTION: Unstack C from D
+ACTION: Put-down C
 STATE_JSON: ```json
 {"on": {"A": "table", "B": "table", "C": "table", "D": "table"}, "clear": ["A", "B", "C", "D"], "holding": null, "handempty": true, "goal_satisfied": ["A on table", "D clear"], "goal_remaining": ["B on A", "C on B", "D on C"]}
 ```
 
-Two goal conditions satisfied. Now build: B on A, then C on B, then D on C.
+Two goal conditions satisfied. Build: B on A, then C on B, then D on C.
 
-ACTION: (pick-up B)
-ACTION: (stack B A)
-ACTION: (pick-up C)
+ACTION: Pick-up B
+ACTION: Stack B on A
+ACTION: Pick-up C
 STATE_JSON: ```json
 {"on": {"A": "table", "B": "A", "C": "held", "D": "table"}, "clear": ["B", "D"], "holding": "C", "handempty": false, "goal_satisfied": ["A on table", "B on A", "D clear"], "goal_remaining": ["C on B", "D on C"]}
 ```
 
 Three satisfied. Two actions left.
 
-ACTION: (stack C B)
-ACTION: (pick-up D)
-ACTION: (stack D C)
+ACTION: Stack C on B
+ACTION: Pick-up D
+ACTION: Stack D on C
 STATE_JSON: ```json
 {"on": {"A": "table", "B": "A", "C": "B", "D": "C"}, "clear": ["D"], "holding": null, "handempty": true, "goal_satisfied": ["A on table", "B on A", "C on B", "D on C", "D clear"], "goal_remaining": []}
 ```
@@ -305,26 +274,26 @@ STATE_JSON: ```json
 All goal conditions satisfied.
 
 Plan summary:
-1. (unstack A B)
-2. (put-down A)
-3. (unstack B C)
-4. (put-down B)
-5. (unstack C D)
-6. (put-down C)
-7. (pick-up B)
-8. (stack B A)
-9. (pick-up C)
-10. (stack C B)
-11. (pick-up D)
-12. (stack D C)\
+1. Unstack A from B
+2. Put-down A
+3. Unstack B from C
+4. Put-down B
+5. Unstack C from D
+6. Put-down C
+7. Pick-up B
+8. Stack B on A
+9. Pick-up C
+10. Stack C on B
+11. Pick-up D
+12. Stack D on C\
 """
 
 
 def get_blocksworld_json_examples() -> list:
-    """Condition B: 4-op actions, JSON state, no goal tracking."""
+    """Condition B: NL 4-op actions, JSON state, no goal tracking."""
     return [BLOCKSWORLD_4OP_JSON_EXAMPLE_1, BLOCKSWORLD_4OP_JSON_EXAMPLE_2]
 
 
 def get_blocksworld_json_goal_examples() -> list:
-    """Condition C: 4-op actions, JSON state + goal_satisfied/goal_remaining."""
+    """Condition C: NL 4-op actions, JSON state + goal_satisfied/goal_remaining."""
     return [BLOCKSWORLD_4OP_JSON_GOAL_EXAMPLE_1, BLOCKSWORLD_4OP_JSON_GOAL_EXAMPLE_2]
