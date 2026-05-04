@@ -54,6 +54,10 @@ class AoTPlusPromptBuilder:
             "the Algorithm of Thoughts approach demonstrated in the examples. "
             f"Every {k} actions output one STATE_JSON block showing the complete current "
             f"world state; always output a STATE_JSON block after your final action.{goal_instr} "
+            "Operator selection rule: use (unstack X Y) when X is ON another block Y; "
+            "use (pick-up X) only when X is directly ON the TABLE. "
+            "Use (stack X Y) when holding X and placing it on block Y; "
+            "use (put-down X) only when placing X directly on the TABLE. "
             "End with a 'Plan summary:' numbered list of the committed actions only."
         )
         if self.domain_description:
