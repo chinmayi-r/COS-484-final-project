@@ -20,6 +20,53 @@ class AoTPlusPromptBuilder:
         self.formatted_examples.append(example_str)
         self._formatted_examples_block += f"{example_str}\n---\n\n"
 
+    def _split_example_turns(self, example_str: str) -> tuple[str, str]:
+        """Split a formatted example into (user_part, assistant_part).
+
+        The user part is everything up to (but not including) the first STATE_JSON block.
+        The assistant part is everything from STATE_JSON onward.
+        """
+        marker = "STATE_JSON:"
+        idx = example_str.find(marker)
+        if idx == -1:
+            return example_str, ""
+        return example_str[:idx].rstrip(), example_str[idx:]
+
+    def build_messages(self, initial_state_json: str, goal_state_json: str,
+                       extra_context: str = "") -> List[Dict[str, str]]:
+        """Build a proper multi-turn messages list for the JSON extension.
+
+        Structure mirrors the paper replication:
+            system → [user/assistant per example] → user (new problem)
+
+        This is structurally equivalent to build_bw_messages / build_log_messages
+        used by the paper replication runner.
+        """
+        system_content = (
+            "You are a planning assistant. Solve planning problems step by step using "
+            "the Algorithm of Thoughts approach demonstrated in the examples. "
+            "After EVERY action output exactly one STATE_JSON block. "
+            "End with a 'Plan summary:' numbered list of the committed actions only."
+        )
+        if self.domain_description:
+            system_content += f"\n\nDomain: {self.domain_description}"
+
+        messages: List[Dict[str, str]] = [{"role": "system", "content": system_content}]
+
+        for ex in self.formatted_examples:
+            user_part, asst_part = self._split_example_turns(ex)
+            if user_part and asst_part:
+                messages.append({"role": "user",      "content": user_part})
+                messages.append({"role": "assistant", "content": asst_part})
+
+        extra_section = f"\n{extra_context}\n" if extra_context else ""
+        user_content = (
+            f"{extra_section}Initial state (JSON):\n{initial_state_json}\n\n"
+            f"Goal state (JSON):\n{goal_state_json}"
+        )
+        messages.append({"role": "user", "content": user_content})
+        return messages
+
     def add_example(self, initial_state: str, goal_state: str, solution_trajectory: List[str],
                    random_trajectories: List[List[str]]) -> None:
         """Add a few-shot example with both successful and random trajectories."""
@@ -266,6 +313,9 @@ class AoTPlus:
         Returns:
             The generated solution plan
         """
+        if self.prompt_builder.use_json_state:
+            messages = self.prompt_builder.build_messages(initial_state, goal_state, extra_context)
+            return self.llm_client.generate_messages(messages, temperature, max_tokens)
         prompt = self.prompt_builder.build_prompt(initial_state, goal_state, extra_context)
         return self.llm_client.generate(prompt, temperature, max_tokens)
     

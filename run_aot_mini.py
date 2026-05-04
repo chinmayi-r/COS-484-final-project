@@ -428,6 +428,24 @@ def make_aot_plus_solver(domain: str, provider: str) -> AoTPlus:
 # Evaluation loop
 # ---------------------------------------------------------------------------
 
+def _print_prompt_structure(solver: "AoTPlus", domain: str, init_json: str,
+                            goal_json: str, extra: str = "") -> None:
+    """Print a human-readable summary of the messages being sent."""
+    msgs = solver.prompt_builder.build_messages(init_json, goal_json, extra)
+    print(f"\n  {'─'*56}")
+    print(f"  PROMPT STRUCTURE ({domain} / JSON extension)")
+    print(f"  Messages: {len(msgs)}  "
+          f"(system + {len(msgs)-2}×user/asst turns + 1 final user)")
+    total_chars = sum(len(m["content"]) for m in msgs)
+    print(f"  Total chars: {total_chars:,}")
+    for i, m in enumerate(msgs):
+        role = m["role"].upper()
+        chars = len(m["content"])
+        preview = m["content"][:80].replace("\n", " ")
+        print(f"    [{i}] {role:<9} {chars:5,} chars  │ {preview}…")
+    print(f"  {'─'*56}\n")
+
+
 def evaluate_domain(
     domain: str,
     problems: List[Tuple[str, str]],
@@ -437,6 +455,7 @@ def evaluate_domain(
     delay_secs: float = 1.0,
     output_dir: Optional[str] = None,
     city_map: Optional[Dict[str, str]] = None,
+    verbose: bool = False,
 ) -> Dict[str, Any]:
     solver = make_aot_plus_solver(domain, provider)
     results = []
@@ -455,8 +474,6 @@ def evaluate_domain(
         success = False
 
         try:
-            # Convert NL states to JSON for the JSON-mode prompt.
-            # Validation still uses NL (goal satisfaction checks are NL-based).
             if domain == "blocksworld":
                 init_json = json.dumps(bw_nl_to_canonical(init_nl), sort_keys=True)
                 goal_json = json.dumps(bw_nl_to_canonical(goal_nl), sort_keys=True)
@@ -464,6 +481,7 @@ def evaluate_domain(
                 init_json = json.dumps(log_nl_to_canonical(init_nl), sort_keys=True)
                 goal_json = json.dumps(log_nl_to_canonical(goal_nl), sort_keys=True)
 
+            extra = ""
             if domain == "logistics":
                 cm = city_map or LOGISTICS_CITY_MAP
                 city_map_lines = "\n".join(
@@ -476,10 +494,12 @@ def evaluate_domain(
                     + "\nLocations ending in '-0' are airports. "
                     "Airplanes fly between airports only."
                 )
-                raw = solver.solve(init_json, goal_json, temperature=0.0,
-                                   max_tokens=max_tokens, extra_context=extra)
-            else:
-                raw = solver.solve(init_json, goal_json, temperature=0.0, max_tokens=max_tokens)
+
+            if verbose and idx == 1:
+                _print_prompt_structure(solver, domain, init_json, goal_json, extra)
+
+            raw = solver.solve(init_json, goal_json, temperature=0.0,
+                               max_tokens=max_tokens, extra_context=extra)
 
             if domain == "blocksworld":
                 success, n_actions, error_msg = verify_blocksworld(init_nl, goal_nl, raw)
@@ -494,6 +514,13 @@ def evaluate_domain(
 
         status = "✓" if success else "✗"
         print(f"{status}  actions={n_actions:2d}  {error_msg or ''}")
+
+        if verbose and not success:
+            print(f"\n  ── RAW OUTPUT (problem {idx}) ──────────────────────────")
+            print(raw[:3000])
+            if len(raw) > 3000:
+                print(f"  … [{len(raw)-3000} chars truncated]")
+            print(f"  ── END RAW OUTPUT ──────────────────────────────────\n")
 
         results.append({
             "problem_idx": idx,
@@ -560,6 +587,8 @@ def main():
                         help="Seconds between API calls")
     parser.add_argument("--output_dir", default="outputs/aot_plus_mini",
                         help="Directory to save raw outputs and per-problem results")
+    parser.add_argument("--verbose", action="store_true",
+                        help="Print prompt structure for problem 1 and raw output for failures")
     args = parser.parse_args()
 
     available = Config.get_available_providers()
@@ -625,6 +654,7 @@ def main():
             max_tokens=args.max_tokens,
             delay_secs=args.delay,
             output_dir=args.output_dir,
+            verbose=args.verbose,
         )
 
     if args.domain in ("logistics", "both"):
@@ -637,6 +667,7 @@ def main():
             delay_secs=args.delay,
             output_dir=args.output_dir,
             city_map=city_map,
+            verbose=args.verbose,
         )
 
     # Print results table

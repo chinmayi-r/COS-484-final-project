@@ -211,6 +211,21 @@ def verify_blocksworld(
 # Evaluation loop
 # ---------------------------------------------------------------------------
 
+def _print_paper_prompt_structure(domain: str, messages: List[Dict[str, str]]) -> None:
+    print(f"\n  {'─'*56}")
+    print(f"  PROMPT STRUCTURE ({domain} / paper replication)")
+    print(f"  Messages: {len(messages)}  "
+          f"(system + {len(messages)-2}×user/asst turns + 1 final user)")
+    total_chars = sum(len(m["content"]) for m in messages)
+    print(f"  Total chars: {total_chars:,}")
+    for i, m in enumerate(messages):
+        role = m["role"].upper()
+        chars = len(m["content"])
+        preview = m["content"][:80].replace("\n", " ")
+        print(f"    [{i}] {role:<9} {chars:5,} chars  │ {preview}…")
+    print(f"  {'─'*56}\n")
+
+
 def evaluate_blocksworld(
     problems: List[Tuple[str, str]],
     provider: str,
@@ -218,6 +233,7 @@ def evaluate_blocksworld(
     max_tokens: int = 2000,
     delay_secs: float = 1.0,
     output_dir: Optional[str] = None,
+    verbose: bool = False,
 ) -> Dict[str, Any]:
     client = get_llm_client(provider)
 
@@ -239,12 +255,21 @@ def evaluate_blocksworld(
             init_compact = bw_nl_to_compact_initial(init_nl)
             goal_compact = bw_nl_to_compact_goal(goal_nl)
             messages = build_bw_messages(init_compact, goal_compact)
+            if verbose and idx == 1:
+                _print_paper_prompt_structure("blocksworld", messages)
             raw = client.generate_messages(messages, temperature=0.0, max_tokens=max_tokens)
             success, n_actions, error_msg = verify_blocksworld(init_nl, goal_nl, raw)
         except Exception as e:
             error_msg = str(e)
 
         print(f"{'✓' if success else '✗'}  actions={n_actions:2d}  {error_msg or ''}")
+
+        if verbose and not success:
+            print(f"\n  ── RAW OUTPUT (problem {idx}) ──────────────────────────")
+            print(raw[:3000])
+            if len(raw) > 3000:
+                print(f"  … [{len(raw)-3000} chars truncated]")
+            print(f"  ── END RAW OUTPUT ──────────────────────────────────\n")
 
         result = {
             "problem_idx":  idx,
@@ -401,6 +426,7 @@ def evaluate_logistics(
     max_tokens: int = 4000,
     delay_secs: float = 1.0,
     output_dir: Optional[str] = None,
+    verbose: bool = False,
 ) -> Dict[str, Any]:
     client = get_llm_client(provider)
     _city_map = city_map or LOGISTICS_CITY_MAP
@@ -422,16 +448,24 @@ def evaluate_logistics(
         try:
             start_block = log_nl_to_compact(init_nl)
             goal_str    = log_goal_nl_to_compact(goal_nl)
-            # derive per-problem city map (covers goal locations too)
             per_map = derive_city_map(init_nl, goal_nl) or {k.lower(): v.lower()
                                                              for k, v in _city_map.items()}
             messages = build_log_messages(start_block, goal_str)
+            if verbose and idx == 1:
+                _print_paper_prompt_structure("logistics", messages)
             raw = client.generate_messages(messages, temperature=0.0, max_tokens=max_tokens)
             success, n_actions, error_msg = verify_logistics(init_nl, goal_nl, per_map, raw)
         except Exception as e:
             error_msg = str(e)
 
         print(f"{'✓' if success else '✗'}  actions={n_actions:2d}  {error_msg or ''}")
+
+        if verbose and not success:
+            print(f"\n  ── RAW OUTPUT (problem {idx}) ──────────────────────────")
+            print(raw[:3000])
+            if len(raw) > 3000:
+                print(f"  … [{len(raw)-3000} chars truncated]")
+            print(f"  ── END RAW OUTPUT ──────────────────────────────────\n")
 
         result = {
             "problem_idx":   idx,
@@ -493,6 +527,8 @@ def main() -> None:
     parser.add_argument("--max_tokens", type=int, default=3000)
     parser.add_argument("--delay", type=float, default=1.0)
     parser.add_argument("--output_dir", default="outputs/paper_repl")
+    parser.add_argument("--verbose", action="store_true",
+                        help="Print prompt structure for problem 1 and raw output for failures")
     args = parser.parse_args()
 
     available = Config.get_available_providers()
@@ -536,13 +572,14 @@ def main() -> None:
         summaries["blocksworld"] = evaluate_blocksworld(
             problems=bw_probs, provider=args.provider, model_name=model_name,
             max_tokens=args.max_tokens, delay_secs=args.delay, output_dir=args.output_dir,
+            verbose=args.verbose,
         )
 
     if args.domain in ("logistics", "both"):
         summaries["logistics"] = evaluate_logistics(
             problems=log_probs, provider=args.provider, model_name=model_name,
             city_map=city_map,  max_tokens=args.max_tokens, delay_secs=args.delay,
-            output_dir=args.output_dir,
+            output_dir=args.output_dir, verbose=args.verbose,
         )
 
     source = "PlanBench" if use_planbench else "fallback bank"
