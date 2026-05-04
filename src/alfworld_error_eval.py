@@ -9,7 +9,7 @@ import re
 
 from src.aot_plus.core import AoTPlusPromptBuilder
 from src.domains.alfworld import ALFWorldDomain, ALFWorldState
-# from src.models.llm_client import get_llm_client
+from src.models.llm_client import get_llm_client
 
 DYNAMIC_PREDICATES = {
     "atLocation",
@@ -564,6 +564,10 @@ def evaluate_file(path, args, llm_client, prompt_builder, totals):
 
     prompt = prompt_builder.build_prompt(initial_state_nl, goal_state_nl)
     llm_output = llm_client.generate(prompt, args.temperature, args.max_tokens)
+    
+    print("\n========== RAW MODEL OUTPUT ==========")
+    print(llm_output)
+    print("========== END RAW MODEL OUTPUT ==========\n")
 
     actions, states = extract_actions_and_states(llm_output)
     per_step, accumulation_facts = episode_diagnostics(actions, states, initial_state_nl)

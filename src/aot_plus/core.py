@@ -2,7 +2,7 @@
 from typing import Dict, List, Optional, Any, Callable
 import re
 
-# from src.models.llm_client import LLMClient, get_llm_client
+from src.models.llm_client import get_llm_client
 
 class AoTPlusPromptBuilder:
     """Builder for AoT+ style prompts with state memoization and random trajectory augmentation."""
@@ -136,11 +136,14 @@ Use the Algorithm of Thoughts Plus approach to solve this planning problem.
 5. Build towards the goal state systematically
 6. For each action you take, start the line with "ACTION:" followed by the action description
 7. After each action, show the updated state using path-based STATE notation
-8. STATE 1 means the first candidate first action from the initial state
-9. STATE 2 means the second candidate first action from the initial state
-10. STATE 1.1 means the first continuation after STATE 1
-11. STATE 1.2 means the second continuation after STATE 1
-12. When backtracking, explicitly return to a previous STATE or to the initial state
+8. STATE numbering is tree/path-based, not decimal counting.
+9. A linear continuation always appends ".1" to the previous state label.
+   Example: STATE 1 -> STATE 1.1 -> STATE 1.1.1 -> STATE 1.1.1.1.
+10. A sibling branch increments only when trying a different action from the same parent state.
+    Example: after STATE 1, a different second action would be STATE 1.2, not STATE 1.1.1.
+11. STATE 2 means a completely different first action from the initial state.
+12. Do not use STATE 1.2 to mean “the second time step.” Use STATE 1.1 for the next step after STATE 1, then STATE 1.1.1, and so on.
+13. When backtracking, explicitly say which previous STATE or initial state you return to.
 
 ## Examples:
 """
@@ -154,11 +157,40 @@ Goal state: {goal_state}
 
 Solve this step by step, tracking the state after each action. Remember to:
 1. Prefix each action with "ACTION:"
-2. Each ACTION should use object/receptacle IDs only, not type names. 
-For example, write “Pick up object AP1 from receptacle CT1,” not “Pick 
+2. Each ACTION should use object/receptacle IDs only, not type names.
+For example, write “Pick up object AP1 from receptacle CT1,” not “Pick
 up object Apple AP1 from receptacle CounterTop CT1.”
-3. Update the state after each action using path-based STATE notation
-4. Backtracking should return to a previous STATE or to the initial state
+3. Update the state after each action using tree/path-based STATE notation:
+   - next step in same path: append ".1"
+   - alternative sibling action from same parent: increment the last number
+   - different first action from initial state: use STATE 2, STATE 3, etc.
+4. Do not number linear time steps as STATE 1.1, STATE 1.2, STATE 1.3.
+5. After every ACTION, the STATE line must include the complete current dynamic world state, not only changed facts.
+6. Include every dynamic fact that remains true:
+   - agent location
+   - what the agent is holding
+   - every object currently in a receptacle
+   - every object currently at a location
+   - every opened receptacle
+   - every goal-relevant object status, such as cool/hot/clean/sliced
+7. Do not omit facts that are unchanged. If an Apple was in a DiningTable before and is still there, restate it.
+8. Do not write "All else unchanged", "Agent at ...", "holding Apple ...", "Fridge is open", or "Apple removed from DiningTable".
+9. Every included object/receptacle fact must include both the type word and the ID.
+10. Use exact fact formats like:
+   - Agent agent1 is at <location>
+   - Agent agent1 is holding Apple <object_id>
+   - Agent agent1 is holding nothing
+   - Fridge <fridge_id> is opened
+   - Apple <object_id> is cool
+   - Apple <object_id> is in DiningTable <receptacle_id>
+11. Each STATE must be written on one single line after the colon.
+Do not use bullet points or multiline STATE blocks.
+Correct:
+STATE 1: Agent agent1 is at L, Agent agent1 is holding nothing
+Incorrect:
+STATE 1:
+- Agent agent1 is at L
+- Agent agent1 is holding nothing
 
 Start your solution:
 """
@@ -222,7 +254,7 @@ class AoTPlus:
         state_memoization_interval: int = 3,
         state_transition_fn: Optional[Callable[[str, str], str]] = None,
     ):
-        # self.llm_client = get_llm_client(llm_provider)
+        self.llm_client = get_llm_client(llm_provider)
         self.prompt_builder = AoTPlusPromptBuilder(
             domain_description,
             use_json_state=use_json_state,
