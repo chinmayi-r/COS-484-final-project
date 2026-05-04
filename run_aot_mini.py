@@ -949,7 +949,7 @@ def main():
     parser.add_argument("--delay", type=float, default=1.0,
                         help="Seconds between API calls")
     parser.add_argument("--output_dir", default="outputs/aot_plus_mini",
-                        help="Directory to save raw outputs and per-problem results")
+                        help="Base directory; results go to <output_dir>/condition_<B|C>/")
     parser.add_argument("--verbose", action="store_true",
                         help="Print prompt structure for problem 1 and raw output for failures")
     args = parser.parse_args()
@@ -1006,6 +1006,9 @@ def main():
         bw_probs  = BLOCKSWORLD_PROBLEMS[:args.n_bw]
         log_probs = LOGISTICS_PROBLEMS[:args.n_log]
 
+    # Condition-scoped output directory so B and C never overwrite each other
+    cond_dir = f"{args.output_dir}/condition_{args.condition}" if args.output_dir else None
+
     summaries = {}
 
     if args.domain in ("blocksworld", "both"):
@@ -1018,7 +1021,7 @@ def main():
             checkpoint_interval=args.checkpoint_interval,
             max_tokens=args.max_tokens,
             delay_secs=args.delay,
-            output_dir=args.output_dir,
+            output_dir=cond_dir,
             verbose=args.verbose,
         )
 
@@ -1032,7 +1035,7 @@ def main():
             checkpoint_interval=args.checkpoint_interval,
             max_tokens=args.max_tokens,
             delay_secs=args.delay,
-            output_dir=args.output_dir,
+            output_dir=cond_dir,
             city_map=city_map,
             verbose=args.verbose,
         )
@@ -1056,11 +1059,29 @@ def main():
                   f"(of {ta['n_state_parseable']} parseable STATE_JSON blocks)")
     print(f"{'='*60}\n")
 
-    if args.output_dir:
-        with open(f"{args.output_dir}/final_summary.json", "w") as f:
+    if cond_dir:
+        os.makedirs(cond_dir, exist_ok=True)
+        # final_summary.json — top-level numbers without per-problem detail
+        with open(f"{cond_dir}/final_summary.json", "w") as f:
             json.dump({k: {kk: vv for kk, vv in v.items() if kk != "results"}
                        for k, v in summaries.items()}, f, indent=2)
-        print(f"Results saved to {args.output_dir}/")
+        # taxonomy_report.json — all per-problem taxonomy entries in one place
+        taxonomy_report = {}
+        for domain, s in summaries.items():
+            taxonomy_report[domain] = [
+                {
+                    "problem_idx": r["problem_idx"],
+                    "success":     r["success"],
+                    "n_actions":   r["n_actions"],
+                    "error":       r.get("error", ""),
+                    **r.get("error_taxonomy", {}),
+                }
+                for r in s.get("results", [])
+                if "error_taxonomy" in r
+            ]
+        with open(f"{cond_dir}/taxonomy_report.json", "w") as f:
+            json.dump(taxonomy_report, f, indent=2)
+        print(f"Results saved to {cond_dir}/")
 
 
 if __name__ == "__main__":
