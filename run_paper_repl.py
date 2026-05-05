@@ -928,7 +928,7 @@ def main() -> None:
     import argparse
     parser = argparse.ArgumentParser(description="Paper replication runner (AoT+ Appendix B.3/B.4)")
     parser.add_argument("--provider", default="openai",
-                        choices=["openai", "sandbox", "azure_openai"])
+                        choices=["openai", "sandbox", "azure_openai", "anthropic"])
     parser.add_argument("--domain", default="both",
                         choices=["blocksworld", "logistics", "both"])
     parser.add_argument("--n_bw",  type=int, default=20)
