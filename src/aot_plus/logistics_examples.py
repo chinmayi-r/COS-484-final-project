@@ -371,3 +371,8 @@ Plan summary:
 
 def get_logistics_json_examples() -> list:
     return [LOGISTICS_JSON_EXAMPLE_1, LOGISTICS_JSON_EXAMPLE_2, LOGISTICS_JSON_EXAMPLE_3]
+
+
+def get_logistics_json_goal_examples() -> list:
+    # Logistics condition C uses same examples as B (goal tracking not implemented for logistics)
+    return get_logistics_json_examples()

@@ -8,10 +8,11 @@ class AoTPlusPromptBuilder:
     """Builder for AoT+ style prompts with state memoization and random trajectory augmentation."""
 
     def __init__(self, domain_description: str, use_json_state: bool = False,
-                 state_memoization_interval: int = 4):
+                 state_memoization_interval: int = 3, goal_tracking: bool = False):
         self.domain_description = domain_description
         self.use_json_state = use_json_state
         self.state_memoization_interval = state_memoization_interval
+        self.goal_tracking = goal_tracking
         self.examples = []
         self.formatted_examples: List[str] = []
         self._formatted_examples_block: str = ""  # pre-built for JSON prompt reuse
@@ -42,14 +43,22 @@ class AoTPlusPromptBuilder:
         This is structurally equivalent to build_bw_messages / build_log_messages
         used by the paper replication runner.
         """
-        n = self.state_memoization_interval
+        k = self.state_memoization_interval
+        goal_instr = (
+            " Each STATE_JSON must include 'goal_satisfied' (list of goal predicates "
+            "already achieved) and 'goal_remaining' (list not yet achieved)."
+            if self.goal_tracking else ""
+        )
+        freq_phrase = (
+            "After every action output one STATE_JSON block"
+            if k == 1 else
+            f"Every {k} actions output one STATE_JSON block"
+        )
         system_content = (
             "You are a planning assistant. Solve planning problems step by step using "
             "the Algorithm of Thoughts approach demonstrated in the examples. "
-            f"Output a STATE_JSON block every {n} actions (or at a natural phase boundary) "
-            "and always after the final action. "
-            "Each STATE_JSON must include 'goal_satisfied' (list of met goal predicates as strings) "
-            "and 'goal_remaining' (list of unmet goal predicates as strings) fields. "
+            f"{freq_phrase} showing the complete current "
+            f"world state; always output a STATE_JSON block after your final action.{goal_instr} "
             "End with a 'Plan summary:' numbered list of the committed actions only."
         )
         if self.domain_description:
@@ -80,7 +89,7 @@ class AoTPlusPromptBuilder:
             "solution_trajectory": solution_trajectory,
             "random_trajectories": random_trajectories
         })
-
+    
     def _format_state_memoization(self, state_id: str, state_description: str) -> str:
         """Format a state memoization entry.
 
@@ -90,70 +99,101 @@ class AoTPlusPromptBuilder:
         if self.use_json_state:
             return f"STATE_JSON: ```json\n{state_description}\n```\n"
         return f"STATE {state_id}: {state_description}\n"
-
+    
     def _interleave_trajectories(self, solution: List[str], random_paths: List[List[str]]) -> List[str]:
-        """Interleave the solution and random trajectories for example generation."""
+        """Interleave the solution and random trajectories for example generation.
+        
+        Args:
+            solution: List of steps in the successful solution path
+            random_paths: List of lists, where each inner list is a sequence of steps in a random path
+            
+        Returns:
+            List of interleaved steps, showing exploration and backtracking
+        """
+        # Simple interleaving strategy - can be made more sophisticated
         interleaved = []
         solution_steps_used = 0
-
+        
+        # Add initial solution steps (up to half)
         mid_point = len(solution) // 2
         interleaved.extend(solution[:mid_point])
         solution_steps_used = mid_point
-
+        
+        # Add random exploration paths with backtracking
         for random_path in random_paths:
             interleaved.append("Let's try a different approach.")
             interleaved.extend(random_path)
             interleaved.append("This approach isn't working well. Let's backtrack.")
-
+        
+        # Complete with the rest of the solution
         interleaved.extend(solution[solution_steps_used:])
-
+        
         return interleaved
-
+    
     def _format_example(self, example: Dict[str, Any]) -> str:
-        """Format a complete example with state memoization and interleaved trajectories."""
+        """Format a complete example with state memoization and interleaved trajectories.
+        
+        Args:
+            example: Dictionary containing the example data
+            
+        Returns:
+            Formatted example as a string
+        """
         initial_state = example["initial_state"]
         goal_state = example["goal_state"]
-
+        
+        # Interleave solution and random trajectories
         steps = self._interleave_trajectories(
-            example["solution_trajectory"],
+            example["solution_trajectory"], 
             example["random_trajectories"]
         )
-
+        
+        # Build the example with state memoization
         result = f"Initial state: {initial_state}\n"
         result += f"Goal state: {goal_state}\n\n"
         result += self._format_state_memoization("1.0", initial_state)
         result += "I'll solve this step by step:\n\n"
-
+        
         current_state = initial_state
         plan_steps = []
-
+        
         for i, step in enumerate(steps):
             if "backtrack" not in step.lower() and "approach" not in step.lower():
+                # This is an actual action step
                 result += f"ACTION: {step}\n"
                 plan_steps.append(step)
             else:
+                # This is a commentary or backtracking step
                 result += f"{step}\n"
-
+            
+            # Add state memoization periodically
             if (i+1) % self.state_memoization_interval == 0:
+                # If backtracking, use a different state id format
                 if "backtrack" in step.lower():
                     state_id = f"{(i+1)//self.state_memoization_interval}.0"
                 else:
                     state_id = f"{(i+1)//self.state_memoization_interval+1}.0"
-
+                
+                # This would be replaced with actual state computation
                 current_state = f"Updated state after step {i+1}"
                 result += self._format_state_memoization(state_id, current_state)
-
+        
         result += f"\nFinal check: {goal_state} has been achieved.\n\n"
-
+        
+        # Add a plan summary section
         result += "Plan summary:\n"
         for i, step in enumerate(plan_steps):
             result += f"{i+1}. {step}\n"
-
+            
         return result
-
+    
     def build_prompt(self, initial_state: str, goal_state: str,
                     extra_context: str = "") -> str:
-        """Build the complete AoT+ prompt for the given problem."""
+        """Build the complete AoT+ prompt for the given problem.
+
+        initial_state / goal_state are JSON strings in JSON mode, natural language otherwise.
+        extra_context is injected into the problem section (e.g. city maps for logistics).
+        """
         if self.use_json_state:
             return self._build_json_prompt(initial_state, goal_state, extra_context)
         return self._build_text_prompt(initial_state, goal_state)
@@ -201,7 +241,15 @@ Start your solution:
 
     def _build_json_prompt(self, initial_state_json: str, goal_state_json: str,
                            extra_context: str = "") -> str:
-        n = self.state_memoization_interval
+        k = self.state_memoization_interval
+        goal_rule = (
+            f"\n7. Each STATE_JSON must include 'goal_satisfied' and 'goal_remaining' "
+            "fields tracking which goal predicates are already achieved."
+            if self.goal_tracking else ""
+        )
+        freq_phrase2 = (
+            "After every action" if k == 1 else f"After every {k} actions"
+        )
         prompt = f"""# Algorithm of Thoughts Plus (AoT+) Planning System — JSON State Mode
 
 ## Domain Description:
@@ -211,21 +259,17 @@ Start your solution:
 Given an initial state and a goal state (both in JSON), create a plan to transform the initial
 state into the goal state.
 
-### Output Format Rules:
-1. For each action, output a line starting with "ACTION:" followed by the action description
-2. Every {n} actions (or at a natural phase boundary), output a STATE_JSON block in this format:
+### CRITICAL Output Format Rules:
+1. For each action, output a line starting with "ACTION:" followed by the action description.
+2. {freq_phrase2}, output one STATE_JSON block showing the complete updated world
+   state in this exact format:
    STATE_JSON: ```json
    {{...}}
    ```
-3. Always output a STATE_JSON block after the final action
-4. Each STATE_JSON must include:
-   - "goal_satisfied": list of goal predicates already met (e.g. ["P0 at L2-0", "B on A"])
-   - "goal_remaining": list of unmet goal predicates
-5. Explore different paths if needed; if you backtrack, record the undo actions too
-6. End with a "Plan summary:" section listing only the final successful actions
-7. Start with a goal analysis: for each entity, note current location vs goal and whether
-   it needs to move (e.g. "P0: L2 -> L2 (no)" or "B: table -> A (yes)")
-8. Before acting, verify preconditions from the most recent STATE_JSON
+3. Always output a STATE_JSON block after your final action.
+4. If you backtrack, output ACTION lines for the undo moves and include them in the checkpoint count.
+5. End with a "Plan summary:" section listing only the final committed actions.
+6. Before moving a block, verify it appears in the "clear" array of the current STATE_JSON.{goal_rule}
 
 ## Examples:
 """
@@ -243,8 +287,7 @@ STATE_JSON: ```json
 {initial_state_json}
 ```
 
-Solve this step by step. Start with a goal analysis, then execute actions. Output STATE_JSON
-with goal_satisfied/goal_remaining every {n} actions or at phase boundaries.
+Solve this step by step. Remember: after EVERY ACTION output exactly one STATE_JSON block.
 
 Start your solution:
 """
@@ -255,12 +298,14 @@ class AoTPlus:
     """Main implementation of Algorithm of Thoughts Plus."""
 
     def __init__(self, domain_description: str, llm_provider: Optional[str] = None,
-                 use_json_state: bool = False, state_memoization_interval: int = 4):
+                 use_json_state: bool = False, state_memoization_interval: int = 3,
+                 goal_tracking: bool = False):
         self.llm_client = get_llm_client(llm_provider)
         self.prompt_builder = AoTPlusPromptBuilder(
             domain_description,
             use_json_state=use_json_state,
             state_memoization_interval=state_memoization_interval,
+            goal_tracking=goal_tracking,
         )
 
     def add_formatted_example(self, example_str: str) -> None:
@@ -273,32 +318,53 @@ class AoTPlus:
         self.prompt_builder.add_example(
             initial_state, goal_state, solution_trajectory, random_trajectories
         )
-
+        
     def solve(self, initial_state: str, goal_state: str,
               temperature: float = 0.0, max_tokens: int = 3000,
               extra_context: str = "") -> str:
-        """Solve a planning problem using AoT+."""
+        """Solve a planning problem using AoT+.
+
+        Args:
+            initial_state: Description of the initial state
+            goal_state: Description of the goal state
+            temperature: Sampling temperature for the LLM
+            max_tokens: Maximum number of tokens to generate
+            extra_context: Optional extra text injected into the problem section
+
+        Returns:
+            The generated solution plan
+        """
         if self.prompt_builder.use_json_state:
             messages = self.prompt_builder.build_messages(initial_state, goal_state, extra_context)
             return self.llm_client.generate_messages(messages, temperature, max_tokens)
         prompt = self.prompt_builder.build_prompt(initial_state, goal_state, extra_context)
         return self.llm_client.generate(prompt, temperature, max_tokens)
-
+    
     def extract_plan(self, solution_text: str) -> List[str]:
-        """Extract the final plan steps from the solution text."""
+        """Extract the final plan steps from the solution text.
+        
+        Args:
+            solution_text: The raw output from the LLM
+            
+        Returns:
+            List of plan steps
+        """
         steps = []
-
+        
+        # First try to extract from "Plan summary:" section
         plan_summary_pattern = r"[Pp]lan [Ss]ummary:?(.*?)(?=$|\n\n)"
         plan_summary_match = re.search(plan_summary_pattern, solution_text, re.DOTALL)
-
+        
         if plan_summary_match:
+            # Extract steps from numbered list in plan summary
             plan_summary = plan_summary_match.group(1)
             numbered_step_pattern = r"(\d+)[\.:\)]\s+(.*?)(?=\n\d+[\.:\)]|\Z)"
             for match in re.finditer(numbered_step_pattern, plan_summary, re.DOTALL):
                 step = match.group(2).strip()
                 if step:
                     steps.append(step)
-
+        
+        # If no steps found from plan summary, look for ACTION: format
         if not steps:
             action_pattern = r"ACTION:\s*(.*?)(?=STATE|ACTION|\n\n|$)"
             action_matches = re.finditer(action_pattern, solution_text)
@@ -306,7 +372,8 @@ class AoTPlus:
                 action = match.group(1).strip()
                 if action and not action.lower().startswith("no action"):
                     steps.append(action)
-
+        
+        # If still no steps found, try Step format
         if not steps:
             step_pattern = r"Step (\d+):\s*(.*?)(?=Step \d+:|$)"
             step_matches = re.finditer(step_pattern, solution_text, re.DOTALL)
@@ -314,12 +381,14 @@ class AoTPlus:
                 step = match.group(2).strip()
                 if step and not any(x in step.lower() for x in ["let's try", "approach isn't", "backtrack"]):
                     steps.append(step)
-
+        
+        # If still no steps found, look for numbered actions outside of plan summary
         if not steps:
+            # First check for a list of actions with ordinal numbers
             action_list_pattern = r"(?:^|\n)(\d+)[\.:\)]\s+(.*?)(?=\n\d+[\.:\)]|\Z)"
             for match in re.finditer(action_list_pattern, solution_text, re.DOTALL):
                 step = match.group(2).strip()
                 if step and not any(x in step.lower() for x in ["let's try", "approach isn't", "backtrack"]):
                     steps.append(step)
-
-        return steps
+        
+        return steps 
