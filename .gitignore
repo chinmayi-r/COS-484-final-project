@@ -31,4 +31,7 @@ ENV/
 
 # OS specific
 .DS_Store
-Thumbs.db 
+Thumbs.db
+
+# PlanBench PDDL cache
+.planbench_cache/
