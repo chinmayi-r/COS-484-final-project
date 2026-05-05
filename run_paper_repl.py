@@ -39,6 +39,8 @@ from src.paper_replication.state_formatter import (
     derive_city_map,
 )
 from src.sim.logistics_sim import (
+    apply_action as log_apply_action,
+    clone_state as log_clone_state,
     nl_state_to_canonical as log_nl_to_canonical,
     parse_action_text as log_parse_action_text,
     rollout_actions as log_rollout,
@@ -186,6 +188,26 @@ _NL_SEGMENT_RE = re.compile(
     r"(\d+\.[^\n]+)\n[ \t]*-[ \t]*([^\n]+)",
     re.MULTILINE,
 )
+
+# Logistics: match a block of numbered actions followed by an Airplanes/Trucks/Packages state
+_LOG_PHASE_RE = re.compile(
+    r"((?:\d+\.[^\n]+\n?)+)\n*(Airplanes:[^\n]*\nTrucks:[^\n]*\nPackages:[^\n]*)",
+    re.MULTILINE | re.IGNORECASE,
+)
+
+
+def _parse_compact_log_state(state_text: str) -> Dict[str, str]:
+    """Parse 'Airplanes: A0 at L1-0\nTrucks: T0 at L0-0\nPackages: P1 at L2-1' → at dict.
+
+    Returns lowercase entity→location mapping. Skips qualifiers like '(driven but not change)'.
+    Ignores 'All packages are at their goal locations.' line.
+    """
+    text = re.sub(r'\([^)]*\)', '', state_text)
+    at: Dict[str, str] = {}
+    for m in re.finditer(r'([A-Za-z][A-Za-z0-9]*)\s+at\s+(L[0-9]+-[0-9]+)', text, re.IGNORECASE):
+        at[m.group(1).lower()] = m.group(2).lower()
+    return at
+
 
 
 def _parse_compact_bw_state(text: str) -> Dict[str, str]:
@@ -342,6 +364,134 @@ def _compute_error_taxonomy_bw_nl(
     }
 
 
+def _compute_error_taxonomy_log_nl(
+    raw_output: str,
+    initial_nl: str,
+    city_map: Dict[str, str],
+) -> Dict[str, Any]:
+    """
+    Phase-boundary error taxonomy for paper-replication logistics output.
+
+    The paper's logistics format groups several numbered actions between each
+    compact state block (Airplanes/Trucks/Packages).  We use the PDDL block
+    (authoritative action sequence) to advance the simulator to each phase
+    boundary and compare the model's compact state report.
+
+    Applies the same 4-type taxonomy (omission/hallucination/propagation/
+    accumulation) using t-1 as the reference state.  Only entities explicitly
+    mentioned in the model's compact state are compared; packages already
+    delivered (and omitted from the state block) are skipped.
+
+    Vehicle positions (all airplanes and trucks) are always listed in the
+    paper format, giving reliable taxonomy data for those entities.
+    """
+    empty = {
+        "n_state_blocks": 0, "state_parseable": False,
+        "n_steps_checked": 0, "first_illegal_step": None,
+        "error_counts": {"omission": 0, "hallucination": 0,
+                         "propagation": 0, "accumulation": 0},
+    }
+
+    try:
+        initial = log_nl_to_canonical(initial_nl)
+        meta = log_validate_city_map(city_map)
+    except Exception:
+        return empty
+
+    # Parse all PDDL actions — these are the authoritative action sequence
+    pddl_lines = extract_pddl_plan(raw_output)
+    pddl_actions = []
+    for line in pddl_lines:
+        plain = _strip_pddl_parens(line)
+        try:
+            pddl_actions.append(log_parse_action_text(plain))
+        except ValueError:
+            pass
+    _, committed_bad_idx, _ = log_rollout(initial, pddl_actions, meta)
+
+    pddl_marker = re.search(r"The PDDL version\s*:", raw_output, re.IGNORECASE)
+    body = raw_output[:pddl_marker.start()] if pddl_marker else raw_output
+
+    segments = _LOG_PHASE_RE.findall(body)
+    n_state_blocks = len(segments)
+    if not segments or not pddl_actions:
+        return {**empty, "n_state_blocks": n_state_blocks,
+                "first_illegal_step": committed_bad_idx}
+
+    # Pre-compute sim state after each PDDL action (for phase-boundary lookups)
+    sim_states = [log_clone_state(initial)]
+    cur = log_clone_state(initial)
+    for act in pddl_actions:
+        nxt = log_clone_state(cur)
+        log_apply_action(nxt, act, meta)
+        sim_states.append(log_clone_state(nxt))
+        cur = nxt
+
+    total_errors: Dict[str, int] = {"omission": 0, "hallucination": 0,
+                                     "propagation": 0, "accumulation": 0}
+    n_steps_checked = 0
+    state_parseable_count = 0
+    pddl_done = 0  # cumulative PDDL actions applied so far
+
+    # model_prev_at: running model belief for at[] (starts from initial)
+    model_prev_at: Dict[str, str] = {k: v for k, v in initial["at"].items() if v is not None}
+
+    for actions_block, state_block in segments:
+        # Count numbered actions in this phase to advance the PDDL cursor
+        nums = [int(m) for m in re.findall(r"^(\d+)\.", actions_block, re.MULTILINE)]
+        if not nums:
+            continue
+        phase_end = max(nums)
+        # Clip to available PDDL actions
+        phase_end = min(phase_end, len(pddl_actions))
+
+        sim_prev_at = {k: v for k, v in sim_states[pddl_done]["at"].items() if v is not None}
+        sim_curr_at = {k: v for k, v in sim_states[phase_end]["at"].items() if v is not None}
+
+        model_curr_at = _parse_compact_log_state(state_block)
+        if not model_curr_at:
+            pddl_done = phase_end
+            n_steps_checked += 1
+            continue
+        state_parseable_count += 1
+
+        for entity in set(list(sim_curr_at) + list(model_curr_at)):
+            # Only evaluate entities the model explicitly reported
+            if entity not in model_curr_at:
+                continue
+            sim_curr_val   = sim_curr_at.get(entity)
+            sim_prev_val   = sim_prev_at.get(entity)
+            model_curr_val = model_curr_at.get(entity)
+            model_prev_val = model_prev_at.get(entity)
+
+            if model_curr_val == sim_curr_val:
+                continue
+
+            if model_prev_val != sim_prev_val:
+                total_errors["accumulation"] += 1
+            else:
+                sim_changed   = (sim_curr_val   != sim_prev_val)
+                model_changed = (model_curr_val  != model_prev_val)
+                if sim_changed and not model_changed:
+                    total_errors["omission"] += 1
+                elif not sim_changed and model_changed:
+                    total_errors["hallucination"] += 1
+                else:
+                    total_errors["propagation"] += 1
+
+        pddl_done = phase_end
+        model_prev_at.update(model_curr_at)
+        n_steps_checked += 1
+
+    return {
+        "n_state_blocks":     n_state_blocks,
+        "state_parseable":    state_parseable_count > 0,
+        "n_steps_checked":    n_steps_checked,
+        "first_illegal_step": committed_bad_idx,
+        "error_counts":       total_errors,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Verifier
 # ---------------------------------------------------------------------------
@@ -490,14 +640,23 @@ def evaluate_blocksworld(
     # Aggregate taxonomy
     all_tax = [r["error_taxonomy"] for r in results if "error_taxonomy" in r]
     parseable = [t for t in all_tax if t.get("state_parseable")]
+    total_steps = sum(t.get("n_steps_checked", 0) for t in parseable)
+    om  = sum(t["error_counts"]["omission"]      for t in parseable)
+    hal = sum(t["error_counts"]["hallucination"]  for t in parseable)
+    pro = sum(t["error_counts"]["propagation"]    for t in parseable)
+    acc = sum(t["error_counts"]["accumulation"]   for t in parseable)
     taxonomy_agg: Dict[str, Any] = {
         "n_problems_with_state_claims": sum(1 for t in all_tax if t.get("n_state_blocks", 0) > 0),
         "n_state_parseable":            len(parseable),
-        "n_steps_checked":  sum(t.get("n_steps_checked", 0) for t in parseable),
-        "omission":      sum(t["error_counts"]["omission"]      for t in parseable),
-        "hallucination": sum(t["error_counts"]["hallucination"]  for t in parseable),
-        "propagation":   sum(t["error_counts"]["propagation"]    for t in parseable),
-        "accumulation":  sum(t["error_counts"]["accumulation"]   for t in parseable),
+        "n_steps_checked":  total_steps,
+        "omission":      om,
+        "hallucination": hal,
+        "propagation":   pro,
+        "accumulation":  acc,
+        "omission_per_step":      round(om  / total_steps, 4) if total_steps else None,
+        "hallucination_per_step": round(hal / total_steps, 4) if total_steps else None,
+        "propagation_per_step":   round(pro / total_steps, 4) if total_steps else None,
+        "accumulation_per_step":  round(acc / total_steps, 4) if total_steps else None,
         "n_with_illegal_action": sum(
             1 for t in all_tax if t.get("first_illegal_step") is not None
         ),
@@ -669,7 +828,22 @@ def evaluate_logistics(
         except Exception as e:
             error_msg = str(e)
 
-        print(f"{'✓' if success else '✗'}  actions={n_actions:2d}  {error_msg or ''}")
+        taxonomy: Dict[str, Any] = {}
+        if raw:
+            try:
+                per_map_local = derive_city_map(init_nl, goal_nl) or {
+                    k.lower(): v.lower() for k, v in _city_map.items()
+                }
+                taxonomy = _compute_error_taxonomy_log_nl(raw, init_nl, per_map_local)
+            except Exception:
+                pass
+
+        tax_str = ""
+        if taxonomy and taxonomy.get("state_parseable"):
+            ec = taxonomy["error_counts"]
+            tax_str = (f"  [om={ec['omission']} hal={ec['hallucination']} "
+                       f"prop={ec['propagation']} acc={ec['accumulation']}]")
+        print(f"{'✓' if success else '✗'}  actions={n_actions:2d}  {error_msg or ''}{tax_str}")
 
         if verbose and not success:
             print(f"\n  ── RAW OUTPUT (problem {idx}) ──────────────────────────")
@@ -686,6 +860,9 @@ def evaluate_logistics(
             "n_actions":     n_actions,
             "error":         error_msg,
         }
+        if taxonomy:
+            result["error_taxonomy"] = {k: v for k, v in taxonomy.items()
+                                        if k != "block_errors"}
         results.append(result)
 
         if output_dir:
@@ -701,14 +878,39 @@ def evaluate_logistics(
     n_success = sum(r["success"] for r in results)
     accuracy = n_success / len(results) * 100 if results else 0.0
 
+    all_tax = [r["error_taxonomy"] for r in results if "error_taxonomy" in r]
+    parseable = [t for t in all_tax if t.get("state_parseable")]
+    total_steps = sum(t.get("n_steps_checked", 0) for t in parseable)
+    om  = sum(t["error_counts"]["omission"]      for t in parseable)
+    hal = sum(t["error_counts"]["hallucination"]  for t in parseable)
+    pro = sum(t["error_counts"]["propagation"]    for t in parseable)
+    acc = sum(t["error_counts"]["accumulation"]   for t in parseable)
+    taxonomy_agg: Dict[str, Any] = {
+        "n_problems_with_state_blocks": sum(1 for t in all_tax if t.get("n_state_blocks", 0) > 0),
+        "n_state_parseable":            len(parseable),
+        "n_phases_checked":             total_steps,
+        "omission":      om,
+        "hallucination": hal,
+        "propagation":   pro,
+        "accumulation":  acc,
+        "omission_per_phase":      round(om  / total_steps, 4) if total_steps else None,
+        "hallucination_per_phase": round(hal / total_steps, 4) if total_steps else None,
+        "propagation_per_phase":   round(pro / total_steps, 4) if total_steps else None,
+        "accumulation_per_phase":  round(acc / total_steps, 4) if total_steps else None,
+        "n_with_illegal_action": sum(
+            1 for t in all_tax if t.get("first_illegal_step") is not None
+        ),
+    }
+
     summary = {
-        "method":       "paper_replication",
-        "domain":       "logistics",
-        "model":        model_name,
-        "n_problems":   len(results),
-        "n_success":    n_success,
-        "accuracy_pct": round(accuracy, 1),
-        "results":      results,
+        "method":             "paper_replication",
+        "domain":             "logistics",
+        "model":              model_name,
+        "n_problems":         len(results),
+        "n_success":          n_success,
+        "accuracy_pct":       round(accuracy, 1),
+        "error_taxonomy_agg": taxonomy_agg,
+        "results":            results,
     }
 
     if output_dir:
@@ -804,9 +1006,19 @@ def main() -> None:
         print(f"  {domain:<15} {s['n_success']:>4}/{s['n_problems']:<4} {s['accuracy_pct']:>8.1f}%")
         if s.get("error_taxonomy_agg"):
             ta = s["error_taxonomy_agg"]
-            print(f"    taxonomy: omission={ta['omission']} hallucination={ta['hallucination']} "
-                  f"propagation={ta['propagation']} accumulation={ta['accumulation']} "
-                  f"(across {ta['n_steps_checked']} steps)")
+            ns_key = "n_phases_checked" if domain == "logistics" else "n_steps_checked"
+            ns = ta.get(ns_key, ta.get("n_steps_checked", 0))
+            rate_sfx = "phase" if domain == "logistics" else "step"
+            print(f"    taxonomy ({ns} {rate_sfx}s, {ta['n_state_parseable']} problems parseable):")
+            print(f"      raw:  om={ta['omission']} hal={ta['hallucination']} "
+                  f"prop={ta['propagation']} acc={ta['accumulation']}")
+            per_om  = ta.get(f"omission_per_{rate_sfx}")
+            per_hal = ta.get(f"hallucination_per_{rate_sfx}")
+            per_pro = ta.get(f"propagation_per_{rate_sfx}")
+            per_acc = ta.get(f"accumulation_per_{rate_sfx}")
+            if per_om is not None:
+                print(f"      /{rate_sfx}: om={per_om:.4f} hal={per_hal:.4f} "
+                      f"prop={per_pro:.4f} acc={per_acc:.4f}")
     print(f"{'='*60}\n")
 
     if args.output_dir:
