@@ -1092,7 +1092,7 @@ def main():
     import argparse
     parser = argparse.ArgumentParser(description="Run AoT+ JSON extension (Conditions B/C)")
     parser.add_argument("--provider", default="openai",
-                        choices=["openai", "sandbox", "azure_openai"])
+                        choices=["openai", "sandbox", "azure_openai", "anthropic"])
     parser.add_argument("--domain",   default="both",
                         choices=["blocksworld", "logistics", "both"])
     parser.add_argument("--condition", default="B", choices=["B", "C"],
