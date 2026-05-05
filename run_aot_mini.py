@@ -42,6 +42,8 @@ from src.sim.logistics_sim import (
     nl_state_to_canonical as log_nl_to_canonical,
     parse_action_text as log_parse_action,
     rollout_actions as log_rollout,
+    apply_action as log_apply_action,
+    clone_state as log_clone_state,
     validate_city_map,
 )
 from src.eval.common_aot_utils import extract_actions  # used as fallback in extract_plan_summary
@@ -641,6 +643,127 @@ def _compute_error_taxonomy_bw(
 
 
 
+def _compute_error_taxonomy_log(
+    raw_output: str,
+    initial_nl: str,
+    goal_nl: str,
+    city_map: Dict[str, str],
+) -> Dict[str, Any]:
+    """
+    Per-step error taxonomy for logistics, comparing model STATE_JSON vs simulator.
+
+    Tracks both at[entity]=location and in[package]=vehicle predicates.
+    Uses the same 4-type classification as blocksworld (t-1 baseline):
+      omission     — sim changed X but model left it at t-1 value
+      hallucination — sim left X unchanged but model changed X from t-1
+      propagation  — both changed X but to different values
+      accumulation — wrong belief from t-1 carried forward unchanged
+    """
+    empty = {
+        "n_state_blocks": 0, "state_parseable": False,
+        "n_steps_checked": 0, "first_illegal_step": None,
+        "error_counts": {"omission": 0, "hallucination": 0,
+                         "propagation": 0, "accumulation": 0},
+    }
+
+    try:
+        initial = log_nl_to_canonical(initial_nl)
+        meta = validate_city_map(city_map)
+    except Exception:
+        return empty
+
+    body = raw_output.split("Plan summary:")[0] if "Plan summary:" in raw_output else raw_output
+    segments = _SEGMENT_RE.findall(body)
+    n_state_blocks = len(segments)
+
+    if not segments:
+        all_blocks = _STATE_JSON_RE.findall(body)
+        return {**empty, "n_state_blocks": len(all_blocks)}
+
+    plan_raw = extract_plan_summary(raw_output)
+    parsed_plan = []
+    for a in plan_raw:
+        try:
+            parsed_plan.append(log_parse_action(a))
+        except ValueError:
+            pass
+    _, committed_bad_idx, _ = log_rollout(initial, parsed_plan, meta)
+
+    sim_prev = log_clone_state(initial)
+    model_prev_at: Dict[str, Any] = dict(initial["at"])
+    model_prev_in: Dict[str, Any] = dict(initial["in"])
+
+    total_errors: Dict[str, int] = {"omission": 0, "hallucination": 0,
+                                     "propagation": 0, "accumulation": 0}
+    n_steps_checked = 0
+    state_parseable_count = 0
+
+    for actions_block, state_json_str in segments:
+        action_texts = _ACTION_LINE_RE.findall(actions_block)
+
+        sim_curr = log_clone_state(sim_prev)
+        for action_text in action_texts:
+            try:
+                act = log_parse_action(action_text)
+                nxt = log_clone_state(sim_curr)
+                log_apply_action(nxt, act, meta)
+                sim_curr = nxt
+            except (ValueError, KeyError):
+                break
+
+        try:
+            model_state = json.loads(state_json_str.strip())
+            state_parseable_count += 1
+        except json.JSONDecodeError:
+            sim_prev = sim_curr
+            n_steps_checked += 1
+            continue
+
+        model_curr_at = {k.lower(): (v.lower() if v else None)
+                         for k, v in model_state.get("at", {}).items()}
+        model_curr_in = {k.lower(): (v.lower() if v else None)
+                         for k, v in model_state.get("in", {}).items()}
+        sim_curr_at  = sim_curr["at"]
+        sim_curr_in  = sim_curr["in"]
+        sim_prev_at  = sim_prev["at"]
+        sim_prev_in  = sim_prev["in"]
+
+        def _classify(sim_c, sim_p, mod_c, mod_p):
+            if mod_c == sim_c:
+                return
+            if mod_p != sim_p:
+                total_errors["accumulation"] += 1
+            else:
+                sim_changed   = (sim_c != sim_p)
+                model_changed = (mod_c != mod_p)
+                if sim_changed and not model_changed:
+                    total_errors["omission"] += 1
+                elif not sim_changed and model_changed:
+                    total_errors["hallucination"] += 1
+                else:
+                    total_errors["propagation"] += 1
+
+        for entity in set(list(sim_curr_at) + list(model_curr_at)):
+            _classify(sim_curr_at.get(entity), sim_prev_at.get(entity),
+                      model_curr_at.get(entity), model_prev_at.get(entity))
+        for pkg in set(list(sim_curr_in) + list(model_curr_in)):
+            _classify(sim_curr_in.get(pkg), sim_prev_in.get(pkg),
+                      model_curr_in.get(pkg), model_prev_in.get(pkg))
+
+        sim_prev = sim_curr
+        model_prev_at = dict(model_curr_at)
+        model_prev_in = dict(model_curr_in)
+        n_steps_checked += 1
+
+    return {
+        "n_state_blocks":     n_state_blocks,
+        "state_parseable":    state_parseable_count > 0,
+        "n_steps_checked":    n_steps_checked,
+        "first_illegal_step": committed_bad_idx,
+        "error_counts":       total_errors,
+    }
+
+
 def _log_goal_satisfied(final_state: Dict[str, Any], goal_nl: str) -> bool:
     """Check if the final logistics state satisfies the NL goal (package locations only)."""
     goal_state = log_nl_to_canonical(goal_nl)
@@ -852,17 +975,22 @@ def evaluate_domain(
 
         # Error taxonomy — only for JSON-parseable conditions (B and C)
         taxonomy: Dict[str, Any] = {}
-        if domain == "blocksworld" and raw:
-            taxonomy = _compute_error_taxonomy_bw(raw, init_nl, goal_nl)
+        if raw:
+            if domain == "blocksworld":
+                taxonomy = _compute_error_taxonomy_bw(raw, init_nl, goal_nl)
+            else:
+                taxonomy = _compute_error_taxonomy_log(
+                    raw, init_nl, goal_nl, city_map or LOGISTICS_CITY_MAP
+                )
 
         status = "✓" if success else "✗"
         tax_str = ""
         if taxonomy and taxonomy.get("state_parseable"):
             ec = taxonomy.get("error_counts", {})
-            prop = "P" if taxonomy.get("propagation") else ""
             tax_str = (f"  [om={ec.get('omission',0)} "
                        f"hal={ec.get('hallucination',0)} "
-                       f"wv={ec.get('wrong_value',0)}{prop}]")
+                       f"prop={ec.get('propagation',0)} "
+                       f"acc={ec.get('accumulation',0)}]")
         elif taxonomy and taxonomy.get("n_state_blocks", 0) == 0:
             tax_str = "  [no STATE_JSON]"
         print(f"{status}  actions={n_actions:2d}  {error_msg or ''}{tax_str}")
@@ -904,18 +1032,26 @@ def evaluate_domain(
 
     # Aggregate error taxonomy across problems
     taxonomy_agg: Dict[str, Any] = {}
-    if domain == "blocksworld":
-        all_tax = [r.get("error_taxonomy", {}) for r in results if "error_taxonomy" in r]
-        if all_tax:
-            parseable = [t for t in all_tax if t.get("state_parseable")]
+    all_tax = [r.get("error_taxonomy", {}) for r in results if "error_taxonomy" in r]
+    if all_tax:
+        parseable = [t for t in all_tax if t.get("state_parseable")]
+        total_steps = sum(t.get("n_steps_checked", 0) for t in parseable)
+        om  = sum(t["error_counts"]["omission"]      for t in parseable)
+        hal = sum(t["error_counts"]["hallucination"]  for t in parseable)
+        pro = sum(t["error_counts"]["propagation"]    for t in parseable)
+        acc = sum(t["error_counts"]["accumulation"]   for t in parseable)
         taxonomy_agg = {
             "n_problems_with_state_json": sum(1 for t in all_tax if t.get("n_state_blocks", 0) > 0),
             "n_state_parseable":          len(parseable),
-            "n_steps_checked":   sum(t.get("n_steps_checked", 0) for t in parseable),
-            "omission":      sum(t["error_counts"]["omission"]      for t in parseable),
-            "hallucination": sum(t["error_counts"]["hallucination"]  for t in parseable),
-            "wrong_value":   sum(t["error_counts"]["wrong_value"]    for t in parseable),
-            "propagation":   sum(1 for t in parseable if t.get("propagation")),
+            "n_steps_checked":            total_steps,
+            "omission":      om,
+            "hallucination": hal,
+            "propagation":   pro,
+            "accumulation":  acc,
+            "omission_per_step":      round(om  / total_steps, 4) if total_steps else None,
+            "hallucination_per_step": round(hal / total_steps, 4) if total_steps else None,
+            "propagation_per_step":   round(pro / total_steps, 4) if total_steps else None,
+            "accumulation_per_step":  round(acc / total_steps, 4) if total_steps else None,
             "n_with_illegal_action": sum(
                 1 for t in all_tax if t.get("first_illegal_step") is not None
             ),
@@ -1073,12 +1209,15 @@ def main():
         print(f"  {domain:<15} {s['n_success']:>4}/{s['n_problems']:<4} {s['accuracy_pct']:>8.1f}%")
         if s.get("error_taxonomy_agg"):
             ta = s["error_taxonomy_agg"]
-            print(f"    taxonomy: omission={ta['omission']} "
-                  f"hallucination={ta['hallucination']} "
-                  f"wrong_value={ta['wrong_value']} "
-                  f"propagation={ta['propagation']} "
-                  f"(across {ta['n_steps_checked']} steps, "
-                  f"{ta['n_state_parseable']} problems w/ parseable STATE_JSON)")
+            ns = ta['n_steps_checked']
+            print(f"    taxonomy ({ns} steps, {ta['n_state_parseable']} problems parseable):")
+            print(f"      raw:  om={ta['omission']} hal={ta['hallucination']} "
+                  f"prop={ta['propagation']} acc={ta['accumulation']}")
+            if ns:
+                print(f"      /step: om={ta.get('omission_per_step','?'):.4f} "
+                      f"hal={ta.get('hallucination_per_step','?'):.4f} "
+                      f"prop={ta.get('propagation_per_step','?'):.4f} "
+                      f"acc={ta.get('accumulation_per_step','?'):.4f}")
     print(f"{'='*60}\n")
 
     if cond_dir:
