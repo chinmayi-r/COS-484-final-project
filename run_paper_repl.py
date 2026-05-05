@@ -11,6 +11,7 @@ Usage:
 """
 from __future__ import annotations
 
+import copy
 import json
 import os
 import re
@@ -24,6 +25,7 @@ from src.paper_replication.bw_prompt import build_bw_messages
 from src.paper_replication.log_prompt import build_log_messages
 from src.paper_replication.bw_4op_sim import (
     nl_to_4op_state,
+    apply_4op_action,
     parse_pddl_bw_action,
     extract_pddl_plan,
     rollout_4op,
@@ -177,6 +179,170 @@ BLOCKSWORLD_PROBLEMS: List[Tuple[str, str]] = [
 
 
 # ---------------------------------------------------------------------------
+# Error taxonomy (paper replication — NL compact state format)
+# ---------------------------------------------------------------------------
+
+_NL_SEGMENT_RE = re.compile(
+    r"(\d+\.[^\n]+)\n[ \t]*-[ \t]*([^\n]+)",
+    re.MULTILINE,
+)
+
+
+def _parse_compact_bw_state(text: str) -> Dict[str, str]:
+    """Parse compact BW state like 'D on table, A on C on B on table, E (held)' → on dict."""
+    on: Dict[str, str] = {}
+    for clause in text.replace(".", "").split(","):
+        clause = clause.strip()
+        # Held: "E (held)" or "E held"
+        m = re.match(r"^(\w+)\s+\(?held\)?$", clause, re.IGNORECASE)
+        if m:
+            on[m.group(1).upper()] = "held"
+            continue
+        # Chain: "A on C on B on table"
+        parts = [p.strip() for p in re.split(r"\s+on\s+", clause, flags=re.IGNORECASE) if p.strip()]
+        for i, blk in enumerate(parts[:-1]):
+            dest = parts[i + 1]
+            on[blk.upper()] = "table" if dest.lower() == "table" else dest.upper()
+        if parts and parts[-1].lower() != "table":
+            on[parts[-1].upper()] = "table"
+    return on
+
+
+def _parse_nl_bw_action(text: str) -> Tuple[str, List[str]]:
+    """Parse paper-repl NL action: 'Unstack D from A', 'Stack D on B', 'Pick-up D', etc."""
+    text = text.strip().rstrip(".")
+    m = re.match(r"pick-?up\s+(\w+)", text, re.IGNORECASE)
+    if m:
+        return "pick-up", [m.group(1).upper()]
+    m = re.match(r"put-?down\s+(\w+)", text, re.IGNORECASE)
+    if m:
+        return "put-down", [m.group(1).upper()]
+    m = re.match(r"unstack\s+(\w+)\s+from\s+(\w+)", text, re.IGNORECASE)
+    if m:
+        return "unstack", [m.group(1).upper(), m.group(2).upper()]
+    m = re.match(r"stack\s+(\w+)\s+on(?:\s+top\s+of)?\s+(\w+)", text, re.IGNORECASE)
+    if m:
+        return "stack", [m.group(1).upper(), m.group(2).upper()]
+    raise ValueError(f"Cannot parse NL action: {text!r}")
+
+
+def _compute_error_taxonomy_bw_nl(
+    raw_output: str,
+    initial_nl: str,
+) -> Dict[str, Any]:
+    """
+    Same 4-type taxonomy as B/C but for paper-repl NL output.
+
+    Parses numbered-action + compact-state-claim pairs from the body (before PDDL block).
+    Simulates each numbered action with the 4-op simulator; compares model's compact
+    state claim to simulator at each checkpoint using t-1 as baseline.
+
+      omission     — sim changed X, model left X unchanged (forgot effect)
+      hallucination — sim left X unchanged, model changed X (invented effect)
+      propagation  — both changed X but to different values (applied action wrong)
+      accumulation — model was wrong at t-1, same wrong belief at t
+    """
+    empty = {
+        "n_state_blocks": 0, "state_parseable": False,
+        "n_steps_checked": 0, "first_illegal_step": None,
+        "error_counts": {"omission": 0, "hallucination": 0,
+                         "propagation": 0, "accumulation": 0},
+        "block_errors": {},
+    }
+
+    try:
+        initial = nl_to_4op_state(initial_nl)
+    except Exception:
+        return empty
+
+    # Body = everything before "The PDDL version:"
+    pddl_marker = re.search(r"The PDDL version\s*:", raw_output, re.IGNORECASE)
+    body = raw_output[:pddl_marker.start()] if pddl_marker else raw_output
+
+    segments = _NL_SEGMENT_RE.findall(body)
+    n_state_blocks = len(segments)
+    if not segments:
+        return empty
+
+    # first_illegal_step from committed PDDL plan
+    pddl_lines = extract_pddl_plan(raw_output)
+    parsed_plan: List[Tuple[str, List[str]]] = []
+    for line in pddl_lines:
+        try:
+            parsed_plan.append(parse_pddl_bw_action(line))
+        except ValueError:
+            pass
+    _, committed_bad_idx, _ = rollout_4op(initial, parsed_plan)
+
+    sim_prev = copy.deepcopy(initial)
+    model_prev_on: Dict[str, str] = dict(initial["on"])
+
+    total_errors: Dict[str, int] = {"omission": 0, "hallucination": 0,
+                                     "propagation": 0, "accumulation": 0}
+    all_block_errors: Dict[str, str] = {}
+    n_steps_checked = 0
+    state_parseable_count = 0
+
+    for action_text, state_text in segments:
+        action_body = re.sub(r"^\d+\.\s*", "", action_text).strip()
+
+        sim_curr = copy.deepcopy(sim_prev)
+        try:
+            op, args = _parse_nl_bw_action(action_body)
+            sim_curr = apply_4op_action(sim_curr, op, args)
+        except ValueError:
+            pass  # keep sim_curr == sim_prev if action unparseable
+
+        model_on = _parse_compact_bw_state(state_text)
+        if not model_on:
+            sim_prev = sim_curr
+            n_steps_checked += 1
+            continue
+        state_parseable_count += 1
+
+        sim_curr_on = sim_curr.get("on", {})
+        sim_prev_on = sim_prev.get("on", {})
+
+        for block in set(list(sim_curr_on) + list(model_on)):
+            sim_curr_val   = sim_curr_on.get(block)
+            sim_prev_val   = sim_prev_on.get(block)
+            model_curr_val = model_on.get(block)
+            model_prev_val = model_prev_on.get(block)
+
+            if model_curr_val == sim_curr_val:
+                continue
+
+            if model_prev_val != sim_prev_val:
+                total_errors["accumulation"] += 1
+                all_block_errors[block] = "accumulation"
+            else:
+                sim_changed   = (sim_curr_val  != sim_prev_val)
+                model_changed = (model_curr_val != model_prev_val)
+                if sim_changed and not model_changed:
+                    total_errors["omission"] += 1
+                    all_block_errors[block] = "omission"
+                elif not sim_changed and model_changed:
+                    total_errors["hallucination"] += 1
+                    all_block_errors[block] = "hallucination"
+                else:
+                    total_errors["propagation"] += 1
+                    all_block_errors[block] = "propagation"
+
+        sim_prev = sim_curr
+        model_prev_on = dict(model_on)
+        n_steps_checked += 1
+
+    return {
+        "n_state_blocks":     n_state_blocks,
+        "state_parseable":    state_parseable_count > 0,
+        "n_steps_checked":    n_steps_checked,
+        "first_illegal_step": committed_bad_idx,
+        "error_counts":       total_errors,
+        "block_errors":       all_block_errors,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Verifier
 # ---------------------------------------------------------------------------
 
@@ -234,14 +400,27 @@ def evaluate_blocksworld(
     delay_secs: float = 1.0,
     output_dir: Optional[str] = None,
     verbose: bool = False,
+    checkpoint_interval: int = 1,
 ) -> Dict[str, Any]:
     client = get_llm_client(provider)
 
     print(f"\n{'='*60}")
     print(f"  PAPER REPLICATION — Blocksworld (4-op, PDDL extraction)")
-    print(f"  Model   : {model_name}")
+    print(f"  Model   : {model_name}  k={checkpoint_interval}")
     print(f"  Problems: {len(problems)}")
     print(f"{'='*60}")
+
+    # Build the checkpoint instruction injected into the system message
+    if checkpoint_interval == 1:
+        _ckpt_instr = (
+            " After every action, write the current state on a new line starting with '- ',"
+            " using the compact format shown in the examples (e.g. '- D on table, A on C on B on table.')."
+        )
+    else:
+        _ckpt_instr = (
+            f" After every {checkpoint_interval} actions, write the current state on a new line"
+            " starting with '- ', using the compact format shown in the examples."
+        )
 
     results = []
     for idx, (init_nl, goal_nl) in enumerate(problems, start=1):
@@ -255,6 +434,9 @@ def evaluate_blocksworld(
             init_compact = bw_nl_to_compact_initial(init_nl)
             goal_compact = bw_nl_to_compact_goal(goal_nl)
             messages = build_bw_messages(init_compact, goal_compact)
+            # Inject checkpoint instruction into system message without touching bw_prompt.py
+            messages[0] = dict(messages[0])
+            messages[0]["content"] = messages[0]["content"] + _ckpt_instr
             if verbose and idx == 1:
                 _print_paper_prompt_structure("blocksworld", messages)
             raw = client.generate_messages(messages, temperature=0.0, max_tokens=max_tokens)
@@ -262,7 +444,16 @@ def evaluate_blocksworld(
         except Exception as e:
             error_msg = str(e)
 
-        print(f"{'✓' if success else '✗'}  actions={n_actions:2d}  {error_msg or ''}")
+        taxonomy = _compute_error_taxonomy_bw_nl(raw, init_nl) if raw else {}
+        tax_str = ""
+        if taxonomy and taxonomy.get("state_parseable"):
+            ec = taxonomy["error_counts"]
+            tax_str = (f"  [om={ec['omission']} hal={ec['hallucination']} "
+                       f"prop={ec['propagation']} acc={ec['accumulation']}]")
+        elif taxonomy and taxonomy.get("n_state_blocks", 0) == 0:
+            tax_str = "  [no state claims]"
+
+        print(f"{'✓' if success else '✗'}  actions={n_actions:2d}  {error_msg or ''}{tax_str}")
 
         if verbose and not success:
             print(f"\n  ── RAW OUTPUT (problem {idx}) ──────────────────────────")
@@ -271,7 +462,7 @@ def evaluate_blocksworld(
                 print(f"  … [{len(raw)-3000} chars truncated]")
             print(f"  ── END RAW OUTPUT ──────────────────────────────────\n")
 
-        result = {
+        result: Dict[str, Any] = {
             "problem_idx":  idx,
             "initial_state": init_nl,
             "goal_state":    goal_nl,
@@ -279,6 +470,8 @@ def evaluate_blocksworld(
             "n_actions":     n_actions,
             "error":         error_msg,
         }
+        if taxonomy:
+            result["error_taxonomy"] = {k: v for k, v in taxonomy.items() if k != "block_errors"}
         results.append(result)
 
         if output_dir:
@@ -294,14 +487,32 @@ def evaluate_blocksworld(
     n_success = sum(r["success"] for r in results)
     accuracy = n_success / len(results) * 100 if results else 0.0
 
+    # Aggregate taxonomy
+    all_tax = [r["error_taxonomy"] for r in results if "error_taxonomy" in r]
+    parseable = [t for t in all_tax if t.get("state_parseable")]
+    taxonomy_agg: Dict[str, Any] = {
+        "n_problems_with_state_claims": sum(1 for t in all_tax if t.get("n_state_blocks", 0) > 0),
+        "n_state_parseable":            len(parseable),
+        "n_steps_checked":  sum(t.get("n_steps_checked", 0) for t in parseable),
+        "omission":      sum(t["error_counts"]["omission"]      for t in parseable),
+        "hallucination": sum(t["error_counts"]["hallucination"]  for t in parseable),
+        "propagation":   sum(t["error_counts"]["propagation"]    for t in parseable),
+        "accumulation":  sum(t["error_counts"]["accumulation"]   for t in parseable),
+        "n_with_illegal_action": sum(
+            1 for t in all_tax if t.get("first_illegal_step") is not None
+        ),
+    }
+
     summary = {
-        "method":       "paper_replication",
-        "domain":       "blocksworld",
-        "model":        model_name,
-        "n_problems":   len(results),
-        "n_success":    n_success,
-        "accuracy_pct": round(accuracy, 1),
-        "results":      results,
+        "method":              "paper_replication",
+        "domain":              "blocksworld",
+        "model":               model_name,
+        "checkpoint_interval": checkpoint_interval,
+        "n_problems":          len(results),
+        "n_success":           n_success,
+        "accuracy_pct":        round(accuracy, 1),
+        "error_taxonomy_agg":  taxonomy_agg,
+        "results":             results,
     }
 
     if output_dir:
@@ -524,6 +735,8 @@ def main() -> None:
                         help="Use hardcoded fallback bank instead of PlanBench instances")
     parser.add_argument("--cache_dir", default=".planbench_cache")
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--checkpoint_interval", type=int, default=1,
+                        help="Output state every N actions (default 1 = after every action)")
     parser.add_argument("--max_tokens", type=int, default=3000)
     parser.add_argument("--delay", type=float, default=1.0)
     parser.add_argument("--output_dir", default="outputs/paper_repl")
@@ -572,7 +785,7 @@ def main() -> None:
         summaries["blocksworld"] = evaluate_blocksworld(
             problems=bw_probs, provider=args.provider, model_name=model_name,
             max_tokens=args.max_tokens, delay_secs=args.delay, output_dir=args.output_dir,
-            verbose=args.verbose,
+            verbose=args.verbose, checkpoint_interval=args.checkpoint_interval,
         )
 
     if args.domain in ("logistics", "both"):
@@ -589,6 +802,11 @@ def main() -> None:
     print(f"  {'-'*35}")
     for domain, s in summaries.items():
         print(f"  {domain:<15} {s['n_success']:>4}/{s['n_problems']:<4} {s['accuracy_pct']:>8.1f}%")
+        if s.get("error_taxonomy_agg"):
+            ta = s["error_taxonomy_agg"]
+            print(f"    taxonomy: omission={ta['omission']} hallucination={ta['hallucination']} "
+                  f"propagation={ta['propagation']} accumulation={ta['accumulation']} "
+                  f"(across {ta['n_steps_checked']} steps)")
     print(f"{'='*60}\n")
 
     if args.output_dir:
