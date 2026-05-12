@@ -184,14 +184,18 @@ BLOCKSWORLD_PROBLEMS: List[Tuple[str, str]] = [
 # Error taxonomy (paper replication — NL compact state format)
 # ---------------------------------------------------------------------------
 
+# BW: capture ALL consecutive numbered action lines before a '- <compact state>' line.
+# One or more numbered lines (each ending with \n) are captured, so k>1 checkpoints
+# correctly include all actions in the group when advancing the simulator.
 _NL_SEGMENT_RE = re.compile(
-    r"(\d+\.[^\n]+)\n[ \t]*-[ \t]*([^\n]+)",
+    r"((?:\d+\.[^\n]+\n)+)[ \t]*-[ \t]*([^\n]+)",
     re.MULTILINE,
 )
 
-# Logistics: match a block of numbered actions followed by an Airplanes/Trucks/Packages state
+# Logistics: match a block of numbered actions followed by an Airplanes/Trucks/Packages state.
+# \n\n? allows an optional blank line between each pair of state header lines.
 _LOG_PHASE_RE = re.compile(
-    r"((?:\d+\.[^\n]+\n?)+)\n*(Airplanes:[^\n]*\nTrucks:[^\n]*\nPackages:[^\n]*)",
+    r"((?:\d+\.[^\n]+\n?)+)\n*(Airplanes:[^\n]*\n\n?Trucks:[^\n]*\n\n?Packages:[^\n]*)",
     re.MULTILINE | re.IGNORECASE,
 )
 
@@ -306,14 +310,16 @@ def _compute_error_taxonomy_bw_nl(
     state_parseable_count = 0
 
     for action_text, state_text in segments:
-        action_body = re.sub(r"^\d+\.\s*", "", action_text).strip()
+        # Extract all individual numbered action lines in this group
+        action_lines = re.findall(r"^\d+\.\s*(.+)$", action_text, re.MULTILINE)
 
         sim_curr = copy.deepcopy(sim_prev)
-        try:
-            op, args = _parse_nl_bw_action(action_body)
-            sim_curr = apply_4op_action(sim_curr, op, args)
-        except ValueError:
-            pass  # keep sim_curr == sim_prev if action unparseable
+        for action_line in action_lines:
+            try:
+                op, args = _parse_nl_bw_action(action_line.strip())
+                sim_curr = apply_4op_action(sim_curr, op, args)
+            except ValueError:
+                pass  # keep sim_curr as-is if action unparseable
 
         model_on = _parse_compact_bw_state(state_text)
         if not model_on:
