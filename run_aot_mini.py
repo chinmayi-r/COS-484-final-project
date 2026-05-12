@@ -782,6 +782,42 @@ def _log_goal_satisfied(final_state: Dict[str, Any], goal_nl: str) -> bool:
     return True
 
 
+def _log_goal_predicates(goal_nl: str) -> List[str]:
+    """Return goal predicates as strings like ['P0 at L1-1', 'P1 at L0-2']."""
+    goal_state = log_nl_to_canonical(goal_nl)
+    preds = []
+    for entity, loc in sorted(goal_state["at"].items()):
+        if loc is not None:
+            preds.append(f"{entity.upper()} at {loc.upper()}")
+    return preds
+
+
+def _log_check_predicates(
+    state: Dict[str, Any], predicates: List[str]
+) -> Tuple[List[str], List[str]]:
+    """Split logistics goal predicates into (satisfied, remaining) for a given state."""
+    satisfied, remaining = [], []
+    for pred in predicates:
+        m = re.match(r"(\S+)\s+at\s+(\S+)", pred)
+        if m:
+            entity, loc = m.group(1).lower(), m.group(2).lower()
+            (satisfied if state["at"].get(entity) == loc else remaining).append(pred)
+        else:
+            remaining.append(pred)
+    return satisfied, remaining
+
+
+def _log_augment_with_goal_tracking(
+    state: Dict[str, Any], predicates: List[str]
+) -> Dict[str, Any]:
+    """Add goal_satisfied/goal_remaining fields to a logistics state dict."""
+    s = dict(state)
+    satisfied, remaining = _log_check_predicates(s, predicates)
+    s["goal_satisfied"] = satisfied
+    s["goal_remaining"] = remaining
+    return s
+
+
 # ---------------------------------------------------------------------------
 # Plan verifiers
 # ---------------------------------------------------------------------------
@@ -946,7 +982,11 @@ def evaluate_domain(
                 init_json = json.dumps(init_dict, sort_keys=True)
                 goal_json = json.dumps(goal_dict, sort_keys=True)
             else:
-                init_json = json.dumps(log_nl_to_canonical(init_nl), sort_keys=True)
+                init_dict = log_nl_to_canonical(init_nl)
+                if condition == "C":
+                    preds = _log_goal_predicates(goal_nl)
+                    init_dict = _log_augment_with_goal_tracking(init_dict, preds)
+                init_json = json.dumps(init_dict, sort_keys=True)
                 goal_json = json.dumps(log_nl_to_canonical(goal_nl), sort_keys=True)
 
             extra = ""
