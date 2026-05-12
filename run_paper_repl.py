@@ -404,7 +404,9 @@ def _compute_error_taxonomy_log_nl(
     except Exception:
         return empty
 
-    # Parse all PDDL actions — these are the authoritative action sequence
+    # Use PDDL block only for first_illegal_step (committed plan correctness).
+    # The per-step taxonomy uses the model's own NL actions to advance the sim,
+    # matching the B/C methodology so error counts are directly comparable.
     pddl_lines = extract_pddl_plan(raw_output)
     pddl_actions = []
     for line in pddl_lines:
@@ -420,51 +422,49 @@ def _compute_error_taxonomy_log_nl(
 
     segments = _LOG_PHASE_RE.findall(body)
     n_state_blocks = len(segments)
-    if not segments or not pddl_actions:
+    if not segments:
         return {**empty, "n_state_blocks": n_state_blocks,
                 "first_illegal_step": committed_bad_idx}
-
-    # Pre-compute sim state after each PDDL action (for phase-boundary lookups)
-    sim_states = [log_clone_state(initial)]
-    cur = log_clone_state(initial)
-    for act in pddl_actions:
-        nxt = log_clone_state(cur)
-        log_apply_action(nxt, act, meta)
-        sim_states.append(log_clone_state(nxt))
-        cur = nxt
 
     total_errors: Dict[str, int] = {"omission": 0, "hallucination": 0,
                                      "propagation": 0, "accumulation": 0}
     n_steps_checked = 0
     state_parseable_count = 0
-    pddl_done = 0  # cumulative PDDL actions applied so far
 
+    sim_prev = log_clone_state(initial)
     # model_prev_at: running model belief for at[] (starts from initial)
     model_prev_at: Dict[str, str] = {k: v for k, v in initial["at"].items() if v is not None}
 
     for actions_block, state_block in segments:
-        # Count numbered actions in this phase to advance the PDDL cursor
-        nums = [int(m) for m in re.findall(r"^(\d+)\.", actions_block, re.MULTILINE)]
-        if not nums:
-            continue
-        phase_end = max(nums)
-        # Clip to available PDDL actions
-        phase_end = min(phase_end, len(pddl_actions))
-
-        sim_prev_at = {k: v for k, v in sim_states[pddl_done]["at"].items() if v is not None}
-        sim_curr_at = {k: v for k, v in sim_states[phase_end]["at"].items() if v is not None}
+        # Parse and apply the model's own NL actions to advance the simulator.
+        # This matches B/C methodology: measures whether the model correctly
+        # predicts the consequences of its own stated actions.
+        action_lines = re.findall(r"^\d+\.\s*(.+)$", actions_block, re.MULTILINE)
+        sim_curr = log_clone_state(sim_prev)
+        for action_line in action_lines:
+            plain = action_line.strip().rstrip(".")
+            try:
+                act = log_parse_action_text(plain)
+                nxt = log_clone_state(sim_curr)
+                log_apply_action(nxt, act, meta)
+                sim_curr = nxt
+            except (ValueError, KeyError):
+                pass  # keep sim_curr as-is if action unparseable
 
         model_curr_at = _parse_compact_log_state(state_block)
         if not model_curr_at:
-            pddl_done = phase_end
+            sim_prev = sim_curr
             n_steps_checked += 1
             continue
         state_parseable_count += 1
 
-        for entity in set(list(sim_curr_at) + list(model_curr_at)):
-            # Only evaluate entities the model explicitly reported
-            if entity not in model_curr_at:
-                continue
+        sim_curr_at = {k: v for k, v in sim_curr["at"].items() if v is not None}
+        sim_prev_at = {k: v for k, v in sim_prev["at"].items() if v is not None}
+
+        # Only evaluate entities the model explicitly reported (paper format
+        # intentionally drops delivered packages from state blocks; evaluating
+        # absent entities would misclassify correct omissions as errors).
+        for entity in model_curr_at:
             sim_curr_val   = sim_curr_at.get(entity)
             sim_prev_val   = sim_prev_at.get(entity)
             model_curr_val = model_curr_at.get(entity)
@@ -485,7 +485,7 @@ def _compute_error_taxonomy_log_nl(
                 else:
                     total_errors["propagation"] += 1
 
-        pddl_done = phase_end
+        sim_prev = sim_curr
         model_prev_at.update(model_curr_at)
         n_steps_checked += 1
 
