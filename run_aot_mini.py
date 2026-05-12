@@ -502,10 +502,31 @@ def _augment_with_goal_tracking(
 
 _ACTION_LINE_RE = re.compile(r"^ACTION:\s*(.+)$", re.MULTILINE)
 _STATE_JSON_RE = re.compile(r"STATE_JSON:\s*```json\s*(.*?)\s*```", re.DOTALL)
+# _SEGMENT_RE kept for reference but replaced by _extract_segments below
 _SEGMENT_RE = re.compile(
     r"((?:ACTION:[^\n]+\n?)+)\s*STATE_JSON:\s*```json\s*(.*?)\s*```",
     re.DOTALL,
 )
+
+
+def _extract_segments(body: str) -> List[Tuple[str, str]]:
+    """
+    Pair each STATE_JSON block with the ACTION lines that precede it.
+
+    More robust than _SEGMENT_RE: allows arbitrary reasoning text between the
+    last ACTION: line and the STATE_JSON: marker. Each STATE_JSON block is
+    paired with all ACTION: lines that appear between the end of the previous
+    STATE_JSON block and the start of this one. Segments with no preceding
+    ACTION: lines are skipped.
+    """
+    segments = []
+    prev_end = 0
+    for m in _STATE_JSON_RE.finditer(body):
+        preceding = body[prev_end:m.start()]
+        if _ACTION_LINE_RE.search(preceding):
+            segments.append((preceding, m.group(1)))
+        prev_end = m.end()
+    return segments
 
 
 def _compute_error_taxonomy_bw(
@@ -545,12 +566,12 @@ def _compute_error_taxonomy_bw(
         return empty
 
     body = raw_output.split("Plan summary:")[0] if "Plan summary:" in raw_output else raw_output
-    segments = _SEGMENT_RE.findall(body)
-    n_state_blocks = len(segments)
+    all_state_blocks = _STATE_JSON_RE.findall(body)
+    n_state_blocks = len(all_state_blocks)
+    segments = _extract_segments(body)
 
     if not segments:
-        all_blocks = _STATE_JSON_RE.findall(body)
-        return {**empty, "n_state_blocks": len(all_blocks)}
+        return {**empty, "n_state_blocks": n_state_blocks}
 
     # Simulate committed plan for first_illegal_step
     plan_raw = extract_plan_summary(raw_output)
@@ -675,12 +696,12 @@ def _compute_error_taxonomy_log(
         return empty
 
     body = raw_output.split("Plan summary:")[0] if "Plan summary:" in raw_output else raw_output
-    segments = _SEGMENT_RE.findall(body)
-    n_state_blocks = len(segments)
+    all_state_blocks = _STATE_JSON_RE.findall(body)
+    n_state_blocks = len(all_state_blocks)
+    segments = _extract_segments(body)
 
     if not segments:
-        all_blocks = _STATE_JSON_RE.findall(body)
-        return {**empty, "n_state_blocks": len(all_blocks)}
+        return {**empty, "n_state_blocks": n_state_blocks}
 
     # Simulate committed plan for first_illegal_step
     plan_raw = extract_plan_summary(raw_output)
