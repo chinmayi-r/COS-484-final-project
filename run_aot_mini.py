@@ -1137,8 +1137,8 @@ def main():
                         choices=["blocksworld", "logistics", "both"])
     parser.add_argument("--condition", default="B", choices=["B", "C"],
                         help="B=JSON state only; C=JSON state + goal tracking")
-    parser.add_argument("--checkpoint_interval", type=int, default=3,
-                        help="Output STATE_JSON every N actions (default 3, matches paper)")
+    parser.add_argument("--checkpoint_interval", type=int, default=1,
+                        help="Output STATE_JSON every N actions (default 1 = after every action, matches few-shot examples)")
     parser.add_argument("--n_bw",  type=int, default=20,
                         help="Number of Blocksworld problems to run")
     parser.add_argument("--n_log", type=int, default=15,

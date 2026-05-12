@@ -49,11 +49,15 @@ class AoTPlusPromptBuilder:
             "already achieved) and 'goal_remaining' (list not yet achieved)."
             if self.goal_tracking else ""
         )
+        ckpt_instr = (
+            "After every action output one STATE_JSON block showing the complete current world state"
+            if k == 1 else
+            f"Every {k} actions output one STATE_JSON block showing the complete current world state"
+        )
         system_content = (
             "You are a planning assistant. Solve planning problems step by step using "
             "the Algorithm of Thoughts approach demonstrated in the examples. "
-            f"Every {k} actions output one STATE_JSON block showing the complete current "
-            f"world state; always output a STATE_JSON block after your final action.{goal_instr} "
+            f"{ckpt_instr}; always output a STATE_JSON block after your final action.{goal_instr} "
             "End with a 'Plan summary:' numbered list of the committed actions only."
         )
         if self.domain_description:
