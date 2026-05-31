@@ -23,11 +23,10 @@ class Config:
     GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
     GOOGLE_MODEL_NAME = os.getenv("GOOGLE_MODEL_NAME")
 
-    # Princeton AI Sandbox (Azure OpenAI-compatible endpoint)
-    # Reads AI_SANDBOX_KEY (Princeton's name) or SANDBOX_API_KEY as fallback.
+    # Princeton AI Sandbox (Portkey gateway — OpenAI-compatible)
+    # Key env var: SANDBOX_API_KEY (also accepts AI_SANDBOX_KEY as used in Princeton docs)
     SANDBOX_API_KEY    = os.getenv("SANDBOX_API_KEY") or os.getenv("AI_SANDBOX_KEY")
-    SANDBOX_BASE_URL   = os.getenv("SANDBOX_BASE_URL", "https://api-ai-sandbox.princeton.edu")
-    SANDBOX_API_VERSION = os.getenv("SANDBOX_API_VERSION", "2025-03-01-preview")
+    SANDBOX_BASE_URL   = os.getenv("SANDBOX_BASE_URL", "https://api.portkey.ai/v1")
     SANDBOX_MODEL_NAME = os.getenv("SANDBOX_MODEL_NAME", "gpt-4o-mini")
 
     @classmethod
