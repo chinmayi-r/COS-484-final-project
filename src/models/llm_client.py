@@ -109,13 +109,19 @@ class OpenAIClient(LLMClient):
 
 
 class SandboxClient(LLMClient):
-    """Client for the Princeton AI Sandbox (Portkey.ai gateway, OpenAI-compatible)."""
+    """Client for the Princeton AI Sandbox.
+
+    The sandbox exposes an Azure OpenAI-compatible endpoint:
+      POST {base_url}/openai/deployments/{model}/chat/completions?api-version=...
+    We use AzureOpenAI so the SDK constructs that path automatically.
+    """
 
     def __init__(self):
         self.model = Config.SANDBOX_MODEL_NAME
-        self.client = OpenAI(
+        self.client = AzureOpenAI(
+            azure_endpoint=Config.SANDBOX_BASE_URL,
             api_key=Config.SANDBOX_API_KEY,
-            base_url=Config.SANDBOX_BASE_URL,
+            api_version=Config.SANDBOX_API_VERSION,
         )
         self.last_usage: Optional[dict] = None
 
