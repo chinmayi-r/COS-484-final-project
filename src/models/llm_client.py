@@ -77,8 +77,8 @@ class AzureOpenAIClient(LLMClient):
 class OpenAIClient(LLMClient):
     """Client for OpenAI API (supports gpt-4o-mini and other modern models)."""
 
-    def __init__(self):
-        self.model = Config.OPENAI_MODEL_NAME or "gpt-4o-mini"
+    def __init__(self, model: Optional[str] = None):
+        self.model = model or Config.OPENAI_MODEL_NAME or "gpt-4o-mini"
         self.client = OpenAI(api_key=Config.OPENAI_API_KEY)
         self.last_usage: Optional[dict] = None
 
@@ -109,10 +109,17 @@ class OpenAIClient(LLMClient):
 
 
 class SandboxClient(LLMClient):
-    """Client for the Princeton AI Sandbox (Portkey.ai gateway, OpenAI-compatible)."""
+    """Client for the Princeton AI Sandbox (Portkey.ai gateway, OpenAI-compatible).
 
-    def __init__(self):
-        self.model = Config.SANDBOX_MODEL_NAME
+    Portkey routes requests to the correct provider based on model name, so the
+    same client works for GPT, Claude, and Gemini models:
+        gpt-4o-mini, gpt-4o
+        claude-opus-4-7, claude-sonnet-4-6, claude-haiku-4-5
+        gemini-2.0-flash, gemini-2.5-pro
+    """
+
+    def __init__(self, model: Optional[str] = None):
+        self.model = model or Config.SANDBOX_MODEL_NAME
         self.client = OpenAI(
             api_key=Config.SANDBOX_API_KEY,
             base_url=Config.SANDBOX_BASE_URL,
@@ -198,19 +205,27 @@ class GoogleClient(LLMClient):
         return "Google Gemini client not implemented yet."
 
 
-def get_llm_client(provider: Optional[str] = None) -> LLMClient:
-    """Factory function to get the appropriate LLM client."""
+def get_llm_client(provider: Optional[str] = None, model: Optional[str] = None) -> LLMClient:
+    """Factory function to get the appropriate LLM client.
+
+    Args:
+        provider: One of 'sandbox', 'openai', 'azure_openai', 'anthropic', 'google'.
+                  Defaults to the first configured provider in Config.
+        model:    Optional model name override. For 'sandbox', Portkey routes to the
+                  correct backend based on this name (gpt-4o-mini, claude-sonnet-4-6,
+                  gemini-2.0-flash, etc.). Falls back to SANDBOX_MODEL_NAME env var.
+    """
     if provider is None:
         provider = Config.get_default_provider()
     if provider is None:
         raise ValueError("No LLM provider configured. Check your .env file.")
 
     if provider == "sandbox":
-        return SandboxClient()
+        return SandboxClient(model=model)
     elif provider == "azure_openai":
         return AzureOpenAIClient()
     elif provider == "openai":
-        return OpenAIClient()
+        return OpenAIClient(model=model)
     elif provider == "anthropic":
         return AnthropicClient()
     elif provider == "google":

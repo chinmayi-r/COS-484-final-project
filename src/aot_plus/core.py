@@ -295,8 +295,8 @@ class AoTPlus:
 
     def __init__(self, domain_description: str, llm_provider: Optional[str] = None,
                  use_json_state: bool = False, state_memoization_interval: int = 3,
-                 goal_tracking: bool = False):
-        self.llm_client = get_llm_client(llm_provider)
+                 goal_tracking: bool = False, model: Optional[str] = None):
+        self.llm_client = get_llm_client(llm_provider, model=model)
         self.prompt_builder = AoTPlusPromptBuilder(
             domain_description,
             use_json_state=use_json_state,

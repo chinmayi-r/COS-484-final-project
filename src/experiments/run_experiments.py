@@ -138,7 +138,8 @@ def _compute_log_goal_diff(current: dict, goal: dict):
 # AoTPlus factory per condition
 # ---------------------------------------------------------------------------
 
-def _make_solver(domain: str, condition: str, provider: str) -> AoTPlus:
+def _make_solver(domain: str, condition: str, provider: str,
+                 model: Optional[str] = None) -> AoTPlus:
     use_json = condition in ("json_structured", "json_goal")
 
     if domain == "blocksworld":
@@ -148,7 +149,7 @@ def _make_solver(domain: str, condition: str, provider: str) -> AoTPlus:
         domain_desc = LogisticsDomain.get_domain_description()
         init_ex, goal_ex, sol_ex, rand_ex = LogisticsDomain.generate_example_problem()
 
-    solver = AoTPlus(domain_desc, provider, use_json_state=use_json)
+    solver = AoTPlus(domain_desc, provider, use_json_state=use_json, model=model)
 
     if use_json:
         if domain == "blocksworld":
@@ -307,6 +308,10 @@ def main():
                         default="aot_text")
     parser.add_argument("--provider",   choices=["sandbox", "openai", "azure_openai"],
                         default="sandbox")
+    parser.add_argument("--model",      default=None,
+                        help="Model name override (e.g. gpt-4o-mini, claude-sonnet-4-6, "
+                             "gemini-2.0-flash). For --provider sandbox, Portkey routes "
+                             "to the correct backend automatically.")
     parser.add_argument("--num_problems", type=int, default=5)
     parser.add_argument("--temperature",  type=float, default=0.0)
     parser.add_argument("--max_tokens",   type=int, default=3000)
@@ -317,16 +322,17 @@ def main():
         print(f"Provider '{args.provider}' not configured. Available: {Config.get_available_providers()}")
         return
 
-    model_name = {
-        "sandbox":     Config.SANDBOX_MODEL_NAME,
-        "openai":      Config.OPENAI_MODEL_NAME,
+    default_model = {
+        "sandbox":      Config.SANDBOX_MODEL_NAME,
+        "openai":       Config.OPENAI_MODEL_NAME,
         "azure_openai": Config.AZURE_OPENAI_DEPLOYMENT_NAME,
     }.get(args.provider, "unknown")
+    model_name = args.model or default_model
 
     problems = BLOCKSWORLD_PROBLEMS if args.domain == "blocksworld" else LOGISTICS_PROBLEMS
     problems = problems[:args.num_problems]
 
-    solver = _make_solver(args.domain, args.condition, args.provider)
+    solver = _make_solver(args.domain, args.condition, args.provider, model=args.model)
 
     print(f"\n=== AoT+ Experiment ===")
     print(f"  Domain    : {args.domain}")
