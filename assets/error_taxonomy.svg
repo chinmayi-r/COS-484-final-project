@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1180" height="320" viewBox="0 0 1180 320" font-family="Segoe UI, Helvetica, Arial, sans-serif">
+  <rect width="1180" height="320" rx="14" fill="#0f172a"/>
+  <text x="590" y="36" text-anchor="middle" font-size="19" font-weight="700" fill="#f8fafc">Per-step state-tracking error taxonomy (model belief vs simulator, using step t-1 as the reference)</text>
+  <g font-size="13" fill="#e2e8f0">
+    <rect x="30" y="60" width="270" height="240" rx="12" fill="#1e293b" stroke="#f87171" stroke-width="2"/>
+    <text x="165" y="92" text-anchor="middle" font-size="16" font-weight="700" fill="#fca5a5">Omission</text>
+    <text x="48" y="124">Model was right at t-1.</text>
+    <text x="48" y="146">The action changed entity X,</text>
+    <text x="48" y="168">but the model's state left X</text>
+    <text x="48" y="190">unchanged.</text>
+    <text x="48" y="230" fill="#94a3b8" font-style="italic">"forgot to apply the effect"</text>
+
+    <rect x="320" y="60" width="270" height="240" rx="12" fill="#1e293b" stroke="#fbbf24" stroke-width="2"/>
+    <text x="455" y="92" text-anchor="middle" font-size="16" font-weight="700" fill="#fde68a">Hallucination</text>
+    <text x="338" y="124">Model was right at t-1.</text>
+    <text x="338" y="146">The action left X unchanged,</text>
+    <text x="338" y="168">but the model's state changed</text>
+    <text x="338" y="190">X anyway.</text>
+    <text x="338" y="230" fill="#94a3b8" font-style="italic">"invented an effect"</text>
+
+    <rect x="610" y="60" width="270" height="240" rx="12" fill="#1e293b" stroke="#a78bfa" stroke-width="2"/>
+    <text x="745" y="92" text-anchor="middle" font-size="16" font-weight="700" fill="#c4b5fd">Propagation</text>
+    <text x="628" y="124">Model was right at t-1.</text>
+    <text x="628" y="146">Both simulator and model</text>
+    <text x="628" y="168">changed X, but to different</text>
+    <text x="628" y="190">values.</text>
+    <text x="628" y="230" fill="#94a3b8" font-style="italic">"applied the action wrong"</text>
+
+    <rect x="900" y="60" width="250" height="240" rx="12" fill="#1e293b" stroke="#38bdf8" stroke-width="2"/>
+    <text x="1025" y="92" text-anchor="middle" font-size="16" font-weight="700" fill="#7dd3fc">Accumulation</text>
+    <text x="918" y="124">Model was already wrong</text>
+    <text x="918" y="146">at t-1 and carries the same</text>
+    <text x="918" y="168">wrong belief into step t.</text>
+    <text x="918" y="230" fill="#94a3b8" font-style="italic">"error carried forward"</text>
+  </g>
+</svg>

@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1180" height="400" viewBox="0 0 1180 400" font-family="Segoe UI, Helvetica, Arial, sans-serif">
+  <rect width="1180" height="400" rx="14" fill="#0f172a"/>
+  <text x="590" y="36" text-anchor="middle" font-size="19" font-weight="700" fill="#f8fafc">Three prompting conditions, same problems, same few-shot structure</text>
+
+  <!-- A -->
+  <rect x="30" y="60" width="360" height="320" rx="12" fill="#1e293b" stroke="#a78bfa" stroke-width="2"/>
+  <text x="210" y="90" text-anchor="middle" font-size="15" font-weight="700" fill="#c4b5fd">A  Paper replication (AoT+)</text>
+  <text x="210" y="112" text-anchor="middle" font-size="12" fill="#cbd5e1">verbatim system prompt + examples from the paper</text>
+  <rect x="50" y="128" width="320" height="232" rx="8" fill="#020617"/>
+  <g font-family="Consolas, Menlo, monospace" font-size="12" fill="#e2e8f0">
+    <text x="62" y="152">ACTION: unstack A from B</text>
+    <text x="62" y="172" fill="#93c5fd">STATE 1: A in hand, B on table,</text>
+    <text x="62" y="190" fill="#93c5fd">         C on table</text>
+    <text x="62" y="214">ACTION: put down A</text>
+    <text x="62" y="234" fill="#93c5fd">STATE 2: A on table, B on table, ...</text>
+    <text x="62" y="262" fill="#fbbf24">Let's try a different approach.</text>
+    <text x="62" y="282">ACTION: pick up C</text>
+    <text x="62" y="302" fill="#fbbf24">This isn't working. Backtrack.</text>
+    <text x="62" y="334" fill="#86efac">The PDDL version: (unstack a b) ...</text>
+  </g>
+
+  <!-- B -->
+  <rect x="410" y="60" width="360" height="320" rx="12" fill="#1e293b" stroke="#34d399" stroke-width="2"/>
+  <text x="590" y="90" text-anchor="middle" font-size="15" font-weight="700" fill="#6ee7b7">B  Structured JSON state</text>
+  <text x="590" y="112" text-anchor="middle" font-size="12" fill="#cbd5e1">machine-checkable state after every action</text>
+  <rect x="430" y="128" width="320" height="232" rx="8" fill="#020617"/>
+  <g font-family="Consolas, Menlo, monospace" font-size="12" fill="#e2e8f0">
+    <text x="442" y="152">ACTION: unstack A from B</text>
+    <text x="442" y="172" fill="#93c5fd">STATE_JSON:</text>
+    <text x="442" y="190" fill="#93c5fd">```json</text>
+    <text x="442" y="208" fill="#93c5fd">{ "on": {"A": "hand",</text>
+    <text x="442" y="226" fill="#93c5fd">          "B": "table",</text>
+    <text x="442" y="244" fill="#93c5fd">          "C": "table"},</text>
+    <text x="442" y="262" fill="#93c5fd">  "clear": ["B", "C"],</text>
+    <text x="442" y="280" fill="#93c5fd">  "hand": "A" }</text>
+    <text x="442" y="298" fill="#93c5fd">```</text>
+    <text x="442" y="334" fill="#86efac">Plan summary: 1. unstack A from B ...</text>
+  </g>
+
+  <!-- C -->
+  <rect x="790" y="60" width="360" height="320" rx="12" fill="#1e293b" stroke="#fbbf24" stroke-width="2"/>
+  <text x="970" y="90" text-anchor="middle" font-size="15" font-weight="700" fill="#fde68a">C  JSON state + goal tracking</text>
+  <text x="970" y="112" text-anchor="middle" font-size="12" fill="#cbd5e1">adds an explicit goal residual at each checkpoint</text>
+  <rect x="810" y="128" width="320" height="232" rx="8" fill="#020617"/>
+  <g font-family="Consolas, Menlo, monospace" font-size="12" fill="#e2e8f0">
+    <text x="822" y="152">ACTION: unstack A from B</text>
+    <text x="822" y="172" fill="#93c5fd">STATE_JSON:</text>
+    <text x="822" y="190" fill="#93c5fd">{ "on": {...}, "clear": [...],</text>
+    <text x="822" y="208" fill="#93c5fd">  "hand": "A",</text>
+    <text x="822" y="232" fill="#fbbf24">  "goal_satisfied": ["B on table"],</text>
+    <text x="822" y="250" fill="#fbbf24">  "goal_remaining": ["A on C",</text>
+    <text x="822" y="268" fill="#fbbf24">                     "C on B"] }</text>
+    <text x="822" y="334" fill="#86efac">Plan summary: 1. unstack A from B ...</text>
+  </g>
+</svg>

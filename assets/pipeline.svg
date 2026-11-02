@@ -1,0 +1,63 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1180" height="300" viewBox="0 0 1180 300" font-family="Segoe UI, Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="arr" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#64748b"/></marker>
+  </defs>
+  <rect width="1180" height="300" rx="14" fill="#0f172a"/>
+  <text x="590" y="36" text-anchor="middle" font-size="19" font-weight="700" fill="#f8fafc">Evaluation pipeline: from benchmark PDDL to verified plans and a per-step error taxonomy</text>
+
+  <!-- boxes -->
+  <g font-size="13" fill="#e2e8f0" text-anchor="middle">
+    <rect x="30" y="90" width="170" height="92" rx="10" fill="#1e293b" stroke="#38bdf8" stroke-width="2"/>
+    <text x="115" y="118" font-weight="700" fill="#7dd3fc">Benchmark instances</text>
+    <text x="115" y="140">PlanBench Blocksworld,</text>
+    <text x="115" y="158">Logistics and ALFWorld,</text>
+    <text x="115" y="174">PDDL parsed to NL states</text>
+
+    <rect x="240" y="90" width="190" height="92" rx="10" fill="#1e293b" stroke="#a78bfa" stroke-width="2"/>
+    <text x="335" y="118" font-weight="700" fill="#c4b5fd">AoT+ prompt builder</text>
+    <text x="335" y="140">few-shot examples with</text>
+    <text x="335" y="158">state memoization and</text>
+    <text x="335" y="174">random-trajectory backtracks</text>
+
+    <rect x="470" y="90" width="170" height="92" rx="10" fill="#1e293b" stroke="#fbbf24" stroke-width="2"/>
+    <text x="555" y="118" font-weight="700" fill="#fde68a">LLM</text>
+    <text x="555" y="140">GPT-4.1 mini and</text>
+    <text x="555" y="158">Claude Sonnet 4.6 via one</text>
+    <text x="555" y="174">OpenAI-compatible client</text>
+
+    <rect x="680" y="90" width="180" height="92" rx="10" fill="#1e293b" stroke="#34d399" stroke-width="2"/>
+    <text x="770" y="118" font-weight="700" fill="#6ee7b7">Plan + state parser</text>
+    <text x="770" y="140">extracts ACTION lines,</text>
+    <text x="770" y="158">STATE_JSON checkpoints,</text>
+    <text x="770" y="174">final plan summary</text>
+
+    <rect x="900" y="90" width="250" height="92" rx="10" fill="#1e293b" stroke="#f87171" stroke-width="2"/>
+    <text x="1025" y="118" font-weight="700" fill="#fca5a5">Domain simulators (ground truth)</text>
+    <text x="1025" y="140">roll out every action, reject illegal</text>
+    <text x="1025" y="158">moves, check goal, diff the model's</text>
+    <text x="1025" y="174">believed state against the real one</text>
+  </g>
+
+  <!-- arrows -->
+  <g stroke="#64748b" stroke-width="2.5" marker-end="url(#arr)">
+    <line x1="200" y1="136" x2="238" y2="136"/>
+    <line x1="430" y1="136" x2="468" y2="136"/>
+    <line x1="640" y1="136" x2="678" y2="136"/>
+    <line x1="860" y1="136" x2="898" y2="136"/>
+  </g>
+
+  <!-- outputs -->
+  <g font-size="13" text-anchor="middle">
+    <rect x="330" y="215" width="220" height="56" rx="10" fill="#172554" stroke="#60a5fa" stroke-width="1.5"/>
+    <text x="440" y="238" font-weight="700" fill="#bfdbfe">Plan accuracy</text>
+    <text x="440" y="257" fill="#dbeafe">goal reached, zero illegal actions</text>
+
+    <rect x="630" y="215" width="260" height="56" rx="10" fill="#172554" stroke="#60a5fa" stroke-width="1.5"/>
+    <text x="760" y="238" font-weight="700" fill="#bfdbfe">State-tracking error taxonomy</text>
+    <text x="760" y="257" fill="#dbeafe">omission, hallucination, propagation, accumulation</text>
+  </g>
+  <g stroke="#64748b" stroke-width="2" marker-end="url(#arr)" fill="none">
+    <path d="M1025,182 C1025,205 440,190 440,213"/>
+    <path d="M1025,182 C1025,205 760,190 760,213"/>
+  </g>
+</svg>
