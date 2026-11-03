@@ -31,4 +31,10 @@ ENV/
 
 # OS specific
 .DS_Store
-Thumbs.db 
+Thumbs.db
+
+# PlanBench PDDL cache (downloaded on demand)
+.planbench_cache/
+
+# Evaluation outputs
+outputs/

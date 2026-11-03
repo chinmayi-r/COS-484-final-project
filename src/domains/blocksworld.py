@@ -1,5 +1,6 @@
 """Blocksworld domain implementation for AoT+ demonstration."""
-from typing import Dict, List, Set, Tuple, Optional
+import re
+from typing import Dict, List, Tuple, Optional
 
 class BlocksWorldState:
     """Representation of a state in the Blocksworld domain."""
@@ -127,35 +128,22 @@ For example: "Block A is on the table, Block B is on Block A, Block C is on the 
         """
         # Extract block names from the description
         block_pattern = r"Block ([A-Za-z0-9]+)"
-        import re
         blocks = set(re.findall(block_pattern, description))
         
         # Create state with all blocks initially on the table
         state = BlocksWorldState(list(blocks))
         
-        # Parse the "on" relationships
-        on_pattern = r"Block ([A-Za-z0-9]+) is on ([A-Za-z0-9]+|table)"
+        # Parse the "on" relationships first, then recompute clear from scratch.
+        on_pattern = r"Block ([A-Za-z0-9]+) is on (?:Block ([A-Za-z0-9]+)|the table|table)"
         for match in re.finditer(on_pattern, description):
             block = match.group(1)
-            destination = match.group(2)
-            
-            # Update the state
-            if destination != "table":
-                # Remove both blocks from clear set temporarily
-                if block in state.clear:
-                    state.clear.remove(block)
-                if destination in state.clear:
-                    state.clear.remove(destination)
-                
-                # Set the on relationship
-                state.on[block] = destination
-                
-                # Add only the top block back to clear set
-                state.clear.add(block)
-            else:
-                state.on[block] = "table"
-                state.clear.add(block)
-                
+            destination = match.group(2) if match.group(2) else "table"
+            state.on[block] = destination
+
+        # A block is clear iff no other block lists it as its destination.
+        occupied = set(dest for dest in state.on.values() if dest != "table")
+        state.clear = set(b for b in state.blocks if b not in occupied)
+
         return state
     
     @staticmethod
